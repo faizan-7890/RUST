@@ -1,0 +1,6 @@
+/target
+/www/pkg
+/www/node_modules
+/www/dist
+*.lock
+**/.DS_Store
