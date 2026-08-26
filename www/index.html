@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Rust + WebAssembly Studio | In-Browser Image Filter Engine</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;600&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="brand">
+        <div class="brand-icon">🦀⚡</div>
+        <div class="brand-text">
+          <h1>RustWasm <span>Studio</span></h1>
+          <p>Real-Time Zero-Copy Image Processing in WebAssembly</p>
+        </div>
+      </div>
+      <div class="header-metrics">
+        <div class="metric-card">
+          <span class="metric-label">ENGINE</span>
+          <span class="metric-val status-online" id="engineStatus">Rust + Wasm</span>
+        </div>
+        <div class="metric-card">
+          <span class="metric-label">WASM TIME</span>
+          <span class="metric-val highlight" id="wasmExecTime">0.00 ms</span>
+        </div>
+        <div class="metric-card">
+          <span class="metric-label">RESOLUTION</span>
+          <span class="metric-val" id="imageDimensions">-- × --</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Workspace -->
+    <main class="workspace">
+      <!-- Left / Center: Canvas Viewport -->
+      <section class="viewport-section">
+        <!-- Toolbar -->
+        <div class="viewport-toolbar">
+          <div class="tool-group">
+            <label class="btn-tool file-btn" for="imageUpload">
+              <span>📁 Open Image</span>
+              <input type="file" id="imageUpload" accept="image/*">
+            </label>
+            <button class="btn-tool" id="btnSample">🖼️ Load Sample</button>
+            <button class="btn-tool" id="btnBenchmark">⚡ Benchmark vs JS</button>
+          </div>
+          <div class="tool-group">
+            <button class="btn-tool" id="btnFlipH" title="Flip Horizontal">↔️ Flip H</button>
+            <button class="btn-tool" id="btnFlipV" title="Flip Vertical">↕️ Flip V</button>
+            <button class="btn-tool" id="btnRotate90" title="Rotate 90°">🔄 90°</button>
+            <button class="btn-tool" id="btnReset">↩️ Reset</button>
+            <button class="btn-tool btn-primary" id="btnDownload">💾 Export</button>
+          </div>
+        </div>
+
+        <!-- Canvas Container with Split View Option -->
+        <div class="canvas-wrapper" id="dropZone">
+          <div class="canvas-view" id="canvasView">
+            <canvas id="mainCanvas"></canvas>
+            <div class="split-slider-container" id="splitContainer" style="display: none;">
+              <canvas id="splitCanvas"></canvas>
+              <div class="split-divider" id="splitDivider">
+                <div class="split-handle">↔</div>
+              </div>
+            </div>
+          </div>
+          <div class="drop-hint" id="dropHint">
+            <div class="hint-icon">📸</div>
+            <h3>Drag & Drop Image Here</h3>
+            <p>Or click "Open Image" to start filtering in Rust</p>
+          </div>
+        </div>
+
+        <!-- Real-time RGB Histogram & Benchmark Panel -->
+        <div class="bottom-stats-grid">
+          <div class="histogram-panel">
+            <div class="panel-title">RGB & Luminance Live Waveform</div>
+            <canvas id="histogramCanvas" width="256" height="70"></canvas>
+          </div>
+          <div class="benchmark-panel" id="benchmarkResult">
+            <div class="panel-title">Wasm vs JavaScript Execution Speed</div>
+            <div class="bench-stats">
+              <div class="bench-item">
+                <span class="bench-label">Rust Wasm</span>
+                <span class="bench-value" id="benchWasm">-- ms</span>
+              </div>
+              <div class="bench-item">
+                <span class="bench-label">Pure JS Loop</span>
+                <span class="bench-value" id="benchJs">-- ms</span>
+              </div>
+              <div class="bench-item">
+                <span class="bench-label">Speedup Factor</span>
+                <span class="bench-value speedup" id="benchSpeedup">--x Faster</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Right: Controls Sidebar -->
+      <aside class="controls-sidebar">
+        <!-- Preset Gallery -->
+        <div class="sidebar-group">
+          <h3 class="group-heading">One-Click Presets</h3>
+          <div class="preset-grid">
+            <button class="preset-pill" data-preset="normal">Default</button>
+            <button class="preset-pill" data-preset="cyberpunk">Cyberpunk</button>
+            <button class="preset-pill" data-preset="vintage">Vintage Film</button>
+            <button class="preset-pill" data-preset="dramatic-bw">Dramatic B&W</button>
+            <button class="preset-pill" data-preset="crisp-hdr">Crisp HDR</button>
+            <button class="preset-pill" data-preset="warm-sunset">Warm Sunset</button>
+          </div>
+        </div>
+
+        <!-- Color & Tonal Adjustments -->
+        <div class="sidebar-group">
+          <h3 class="group-heading">Color & Tone</h3>
+          <div class="control-row">
+            <label for="sliderBrightness">Brightness <span id="valBrightness">0</span></label>
+            <input type="range" id="sliderBrightness" min="-100" max="100" value="0">
+          </div>
+          <div class="control-row">
+            <label for="sliderContrast">Contrast <span id="valContrast">0</span></label>
+            <input type="range" id="sliderContrast" min="-100" max="100" value="0">
+          </div>
+          <div class="control-row">
+            <label for="sliderSaturation">Saturation <span id="valSaturation">1.0</span></label>
+            <input type="range" id="sliderSaturation" min="0" max="3" step="0.05" value="1.0">
+          </div>
+          <div class="control-row">
+            <label for="sliderHue">Hue Rotate <span id="valHue">0°</span></label>
+            <input type="range" id="sliderHue" min="0" max="360" value="0">
+          </div>
+          <div class="control-row">
+            <label for="sliderGamma">Gamma <span id="valGamma">1.0</span></label>
+            <input type="range" id="sliderGamma" min="0.2" max="3.0" step="0.05" value="1.0">
+          </div>
+          <div class="control-row">
+            <label for="sliderVignette">Vignette <span id="valVignette">0.0</span></label>
+            <input type="range" id="sliderVignette" min="0" max="1" step="0.05" value="0">
+          </div>
+        </div>
+
+        <!-- Convolutions & Spatial Filters -->
+        <div class="sidebar-group">
+          <h3 class="group-heading">Spatial Filters</h3>
+          <div class="control-row">
+            <label for="sliderBlur">Gaussian Blur (Sigma) <span id="valBlur">0.0</span></label>
+            <input type="range" id="sliderBlur" min="0" max="10" step="0.2" value="0">
+          </div>
+          <div class="control-row">
+            <label for="sliderSharpen">Sharpen <span id="valSharpen">0.0</span></label>
+            <input type="range" id="sliderSharpen" min="0" max="2" step="0.1" value="0">
+          </div>
+        </div>
+
+        <!-- Instant Kernels & Transformations -->
+        <div class="sidebar-group">
+          <h3 class="group-heading">Artistic & Edge Detection</h3>
+          <div class="toggle-grid">
+            <button class="btn-toggle" id="btnGrayscale">Grayscale</button>
+            <button class="btn-toggle" id="btnSepia">Sepia</button>
+            <button class="btn-toggle" id="btnInvert">Invert</button>
+            <button class="btn-action-tool" id="btnSobel">Sobel Edges</button>
+            <button class="btn-action-tool" id="btnEmboss">Emboss</button>
+            <button class="btn-action-tool" id="btnSolarize">Solarize</button>
+          </div>
+        </div>
+
+        <!-- View Controls -->
+        <div class="sidebar-group">
+          <h3 class="group-heading">View Options</h3>
+          <label class="checkbox-label">
+            <input type="checkbox" id="toggleSplitView"> Split Before / After View
+          </label>
+        </div>
+      </aside>
+    </main>
+  </div>
+
+  <script type="module" src="main.js"></script>
+</body>
+</html>
