@@ -1,0 +1,17 @@
+{
+  "$schema": "https://antigravity.google/schemas/settings.json",
+  "versionControl": {
+    "enabled": true,
+    "showDiffOnEdit": true,
+    "autoStage": false,
+    "sidePanel": {
+      "defaultOpen": true,
+      "showAgentDiffs": true,
+      "trackBackgroundEdits": true
+    }
+  },
+  "permissions": {
+    "fileAccess": "allow",
+    "gitCommands": "allow"
+  }
+}
