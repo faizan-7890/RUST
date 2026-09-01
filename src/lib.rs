@@ -6,6 +6,13 @@ mod transform;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::Clamped;
 
+/// Generates a 256-entry Lookup Table (LUT) from arbitrary control points
+/// using Fritsch-Carlson Monotone Cubic Spline Interpolation.
+#[wasm_bindgen]
+pub fn generate_spline_lut(points: &[f32]) -> Vec<u8> {
+    filters::generate_spline_lut(points)
+}
+
 #[wasm_bindgen]
 pub struct ImageProcessor {
     width: u32,
@@ -75,6 +82,18 @@ impl ImageProcessor {
     /// Computes 4x256 RGB + Luminance channel histogram.
     pub fn get_histogram(&self) -> Vec<u32> {
         filters::compute_histogram(&self.current_pixels)
+    }
+
+    // --- Tone Curves ---
+
+    pub fn apply_tone_curves(
+        &mut self,
+        master_lut: &[u8],
+        r_lut: &[u8],
+        g_lut: &[u8],
+        b_lut: &[u8],
+    ) {
+        filters::apply_tone_curves(&mut self.current_pixels, master_lut, r_lut, g_lut, b_lut);
     }
 
     // --- Filters ---
@@ -201,7 +220,7 @@ impl ImageProcessor {
     }
 
     /// Unified high-speed filter pipeline: resets to base image and applies
-    /// interactive parameters in a single pass without cumulative compounding error.
+    /// interactive parameters and tone curve LUTs in a single pass.
     pub fn apply_pipeline(
         &mut self,
         brightness: f32,
@@ -219,9 +238,19 @@ impl ImageProcessor {
         invert_active: bool,
         grayscale_active: bool,
         vignette_intensity: f32,
+        master_lut: &[u8],
+        r_lut: &[u8],
+        g_lut: &[u8],
+        b_lut: &[u8],
     ) {
         self.reset_to_base();
 
+        // 1. Monotone Cubic Spline Tone Curves
+        if master_lut.len() == 256 && r_lut.len() == 256 && g_lut.len() == 256 && b_lut.len() == 256 {
+            filters::apply_tone_curves(&mut self.current_pixels, master_lut, r_lut, g_lut, b_lut);
+        }
+
+        // 2. Pointwise Tone & Color Adjustments
         if (brightness).abs() > 0.1 {
             filters::apply_brightness(&mut self.current_pixels, brightness);
         }
@@ -249,6 +278,8 @@ impl ImageProcessor {
         if vignette_intensity > 0.01 {
             filters::apply_vignette(&mut self.current_pixels, self.width, self.height, 1.2, vignette_intensity);
         }
+
+        // 3. Edge-Preserving Denoising & Spatial Convolutions
         if bilateral_spatial > 0.1 && bilateral_range > 0.1 {
             convolutions::apply_bilateral_filter(&mut self.current_pixels, self.width, self.height, bilateral_spatial, bilateral_range);
         }
