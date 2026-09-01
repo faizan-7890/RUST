@@ -110,14 +110,42 @@
           <h3 class="group-heading">One-Click Presets</h3>
           <div class="preset-grid">
             <button class="preset-pill" data-preset="normal">Default</button>
+            <button class="preset-pill" data-preset="s-curve">High Contrast S-Curve</button>
+            <button class="preset-pill" data-preset="matte-fade">Matte Film Fade</button>
             <button class="preset-pill" data-preset="portrait-soft">Portrait Soft</button>
             <button class="preset-pill" data-preset="cinema-punch">Cinema Punch</button>
             <button class="preset-pill" data-preset="cyberpunk">Cyberpunk</button>
             <button class="preset-pill" data-preset="vintage">Vintage Film</button>
             <button class="preset-pill" data-preset="dramatic-bw">Dramatic B&W</button>
-            <button class="preset-pill" data-preset="crisp-hdr">Crisp HDR</button>
-            <button class="preset-pill" data-preset="warm-sunset">Warm Sunset</button>
           </div>
+        </div>
+
+        <!-- RGB Tone Curves Editor -->
+        <div class="sidebar-group">
+          <div class="flex-between">
+            <h3 class="group-heading no-border">Cubic Spline Tone Curves</h3>
+            <button class="btn-micro" id="btnResetCurve">Reset Curve</button>
+          </div>
+          <div class="channel-tabs">
+            <button class="channel-tab active" data-channel="master">RGB</button>
+            <button class="channel-tab tab-red" data-channel="r">Red</button>
+            <button class="channel-tab tab-green" data-channel="g">Green</button>
+            <button class="channel-tab tab-blue" data-channel="b">Blue</button>
+          </div>
+          <div class="curve-editor-wrapper">
+            <svg id="curveSvg" viewBox="0 0 256 256" class="curve-svg">
+              <defs>
+                <pattern id="curveGrid" width="64" height="64" patternUnits="userSpaceOnUse">
+                  <path d="M 64 0 L 0 0 0 64" fill="none" stroke="#2a3042" stroke-width="1"/>
+                </pattern>
+              </defs>
+              <rect width="256" height="256" fill="url(#curveGrid)" />
+              <line x1="0" y1="256" x2="256" y2="0" stroke="#374151" stroke-dasharray="3 3" stroke-width="1.5" />
+              <path id="curvePath" d="M 0 256 L 256 0" fill="none" stroke="var(--accent)" stroke-width="2.5" />
+              <g id="curvePoints"></g>
+            </svg>
+          </div>
+          <div class="text-[10px] text-muted text-center">Click curve to add anchor point • Drag to shape • Right-click to remove</div>
         </div>
 
         <!-- Color & Tonal Adjustments -->
