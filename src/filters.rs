@@ -11,6 +11,131 @@ fn clamp_u8(val: f32) -> u8 {
     }
 }
 
+/// Generates a 256-entry Lookup Table (LUT) from arbitrary control points
+/// using Fritsch-Carlson Monotone Cubic Spline Interpolation.
+/// `points` is a flat slice of [x0, y0, x1, y1, ..., xn, yn] where x, y in [0.0, 255.0].
+pub fn generate_spline_lut(points: &[f32]) -> Vec<u8> {
+    if points.len() < 4 {
+        // Identity fallback: [0, 1, 2, ..., 255]
+        return (0..=255).map(|i| i as u8).collect();
+    }
+
+    let mut pts: Vec<(f32, f32)> = points
+        .chunks_exact(2)
+        .map(|c| (c[0].clamp(0.0, 255.0), c[1].clamp(0.0, 255.0)))
+        .collect();
+
+    pts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
+    // Ensure boundary points at x=0 and x=255
+    if pts[0].0 > 0.0 {
+        pts.insert(0, (0.0, pts[0].1));
+    }
+    if pts.last().unwrap().0 < 255.0 {
+        let last_y = pts.last().unwrap().1;
+        pts.push((255.0, last_y));
+    }
+
+    let n = pts.len();
+    let mut dx = vec![0.0f32; n - 1];
+    let mut dy = vec![0.0f32; n - 1];
+    let mut slopes = vec![0.0f32; n - 1];
+
+    for i in 0..n - 1 {
+        dx[i] = pts[i + 1].0 - pts[i].0;
+        dy[i] = pts[i + 1].1 - pts[i].1;
+        slopes[i] = if dx[i].abs() > 1e-6 { dy[i] / dx[i] } else { 0.0 };
+    }
+
+    // Tangents initialization
+    let mut m = vec![0.0f32; n];
+    m[0] = slopes[0];
+    m[n - 1] = slopes[n - 2];
+    for i in 1..n - 1 {
+        m[i] = (slopes[i - 1] + slopes[i]) * 0.5;
+    }
+
+    // Fritsch-Carlson Monotonicity condition enforcement
+    for i in 0..n - 1 {
+        if slopes[i].abs() < 1e-6 {
+            m[i] = 0.0;
+            m[i + 1] = 0.0;
+        } else {
+            let alpha = m[i] / slopes[i];
+            let beta = m[i + 1] / slopes[i];
+            let dist_sq = alpha * alpha + beta * beta;
+            if dist_sq > 9.0 {
+                let tau = 3.0 / dist_sq.sqrt();
+                m[i] = tau * alpha * slopes[i];
+                m[i + 1] = tau * beta * slopes[i];
+            }
+        }
+    }
+
+    // Evaluate cubic Hermite spline for all integer values x in 0..=255
+    let mut lut = vec![0u8; 256];
+    let mut current_segment = 0;
+
+    for x_val in 0..=255 {
+        let x = x_val as f32;
+
+        while current_segment < n - 2 && x > pts[current_segment + 1].0 {
+            current_segment += 1;
+        }
+
+        let x0 = pts[current_segment].0;
+        let x1 = pts[current_segment + 1].0;
+        let y0 = pts[current_segment].1;
+        let y1 = pts[current_segment + 1].1;
+        let m0 = m[current_segment];
+        let m1 = m[current_segment + 1];
+
+        let h = (x1 - x0).max(1e-6);
+        let t = ((x - x0) / h).clamp(0.0, 1.0);
+        let t2 = t * t;
+        let t3 = t2 * t;
+
+        let h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
+        let h10 = t3 - 2.0 * t2 + t;
+        let h01 = -2.0 * t3 + 3.0 * t2;
+        let h11 = t3 - t2;
+
+        let y = h00 * y0 + h10 * h * m0 + h01 * y1 + h11 * h * m1;
+        lut[x_val] = clamp_u8(y);
+    }
+
+    lut
+}
+
+/// Applies combined Master, Red, Green, and Blue Tone Curve Lookup Tables (LUTs).
+pub fn apply_tone_curves(
+    buffer: &mut [u8],
+    master_lut: &[u8],
+    r_lut: &[u8],
+    g_lut: &[u8],
+    b_lut: &[u8],
+) {
+    if master_lut.len() < 256 || r_lut.len() < 256 || g_lut.len() < 256 || b_lut.len() < 256 {
+        return;
+    }
+
+    for chunk in buffer.chunks_exact_mut(4) {
+        let r = chunk[0] as usize;
+        let g = chunk[1] as usize;
+        let b = chunk[2] as usize;
+
+        // 1. Channel-specific tone curve mapping
+        let cr = r_lut[r] as usize;
+        let cg = g_lut[g] as usize;
+        let cb = b_lut[b] as usize;
+
+        // 2. Master RGB tone curve mapping
+        chunk[0] = master_lut[cr];
+        chunk[1] = master_lut[cg];
+        chunk[2] = master_lut[cb];
+    }
+}
+
 /// Converts RGBA pixels to grayscale using standard ITU-R BT.601 luminance coefficients.
 pub fn apply_grayscale(buffer: &mut [u8]) {
     for chunk in buffer.chunks_exact_mut(4) {
