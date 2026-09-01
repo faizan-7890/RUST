@@ -1,4 +1,4 @@
-import init, { ImageProcessor } from "./pkg/wasm_image_processor.js";
+import init, { ImageProcessor, generate_spline_lut } from "./pkg/wasm_image_processor.js";
 
 // Global Application State
 let wasmModule = null;
@@ -11,6 +11,22 @@ let splitCanvas = document.getElementById("splitCanvas");
 let splitCtx = splitCanvas.getContext("2d");
 let histCanvas = document.getElementById("histogramCanvas");
 let histCtx = histCanvas.getContext("2d");
+
+// Curve State
+let activeChannel = "master";
+const curves = {
+  master: [{ x: 0, y: 0 }, { x: 255, y: 255 }],
+  r: [{ x: 0, y: 0 }, { x: 255, y: 255 }],
+  g: [{ x: 0, y: 0 }, { x: 255, y: 255 }],
+  b: [{ x: 0, y: 0 }, { x: 255, y: 255 }],
+};
+
+const luts = {
+  master: new Uint8Array(256),
+  r: new Uint8Array(256),
+  g: new Uint8Array(256),
+  b: new Uint8Array(256),
+};
 
 // Filter State
 const state = {
@@ -43,6 +59,7 @@ const els = {
   btnSample: document.getElementById("btnSample"),
   btnBenchmark: document.getElementById("btnBenchmark"),
   btnReset: document.getElementById("btnReset"),
+  btnResetCurve: document.getElementById("btnResetCurve"),
   btnDownload: document.getElementById("btnDownload"),
   btnFlipH: document.getElementById("btnFlipH"),
   btnFlipV: document.getElementById("btnFlipV"),
@@ -59,6 +76,10 @@ const els = {
   benchWasm: document.getElementById("benchWasm"),
   benchJs: document.getElementById("benchJs"),
   benchSpeedup: document.getElementById("benchSpeedup"),
+  // Tone Curve Elements
+  curveSvg: document.getElementById("curveSvg"),
+  curvePath: document.getElementById("curvePath"),
+  curvePointsGroup: document.getElementById("curvePoints"),
   // Sliders & Value Displays
   sliderBrightness: document.getElementById("sliderBrightness"),
   valBrightness: document.getElementById("valBrightness"),
@@ -91,6 +112,7 @@ async function bootstrap() {
   try {
     wasmModule = await init();
     console.log("🦀 Rust WebAssembly module successfully initialized!");
+    updateAllLuts();
     loadSampleProceduralImage();
   } catch (err) {
     console.warn("Wasm init failed, waiting for wasm-pack build:", err);
@@ -99,7 +121,59 @@ async function bootstrap() {
   }
 }
 
-// 2. Image Loading and Processor Setup
+// 2. Tone Curve Spline & LUT Generation
+function updateChannelLut(channel) {
+  const pts = curves[channel];
+  const flat = [];
+  pts.forEach(p => { flat.push(p.x); flat.push(p.y); });
+  
+  if (wasmModule && generate_spline_lut) {
+    luts[channel] = generate_spline_lut(new Float32Array(flat));
+  } else {
+    // Fallback identity
+    for (let i = 0; i < 256; i++) luts[channel][i] = i;
+  }
+}
+
+function updateAllLuts() {
+  ["master", "r", "g", "b"].forEach(ch => updateChannelLut(ch));
+  renderCurveSvg();
+}
+
+function renderCurveSvg() {
+  const pts = curves[activeChannel];
+  const lut = luts[activeChannel];
+  
+  // Render Path using calculated LUT
+  let d = `M 0 ${256 - lut[0]}`;
+  for (let x = 1; x < 256; x += 2) {
+    d += ` L ${x} ${256 - lut[x]}`;
+  }
+  els.curvePath.setAttribute("d", d);
+
+  // Set channel color
+  const colors = {
+    master: "var(--accent)",
+    r: "#f87171",
+    g: "#4ade80",
+    b: "#60a5fa"
+  };
+  els.curvePath.setAttribute("stroke", colors[activeChannel]);
+
+  // Render draggable points
+  els.curvePointsGroup.innerHTML = "";
+  pts.forEach((p, idx) => {
+    const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    circle.setAttribute("cx", p.x);
+    circle.setAttribute("cy", 256 - p.y);
+    circle.setAttribute("r", "5");
+    circle.setAttribute("class", "curve-point");
+    circle.setAttribute("data-index", idx);
+    els.curvePointsGroup.appendChild(circle);
+  });
+}
+
+// 3. Image Loading and Processor Setup
 function setupImage(img) {
   originalImage = img;
   els.dropHint.style.display = "none";
@@ -119,12 +193,11 @@ function setupImage(img) {
     processor.load_image(imgData.data, canvas.width, canvas.height);
   }
 
-  // Draw original into split canvas
   splitCtx.drawImage(img, 0, 0);
   applyFilters();
 }
 
-// 3. High-Performance Render Loop
+// 4. High-Performance Render Loop
 let renderPending = false;
 function requestRender() {
   if (renderPending) return;
@@ -155,7 +228,11 @@ function applyFilters() {
     state.sepia,
     state.invert,
     state.grayscale,
-    state.vignette
+    state.vignette,
+    luts.master,
+    luts.r,
+    luts.g,
+    luts.b
   );
 
   // Fast zero-copy memory slice read from Wasm linear memory
@@ -175,7 +252,7 @@ function applyFilters() {
   updateSplitView();
 }
 
-// 4. Histogram Waveform Renderer
+// 5. Histogram Waveform Renderer
 function updateHistogram(histData) {
   if (!histData || histData.length < 1024) return;
   const w = histCanvas.width;
@@ -208,7 +285,7 @@ function updateHistogram(histData) {
   });
 }
 
-// 5. Benchmark: Rust Wasm vs Pure JavaScript Loop
+// 6. Benchmark: Rust Wasm vs Pure JavaScript Loop
 function runBenchmark() {
   if (!processor || !originalImage) return;
 
@@ -216,9 +293,9 @@ function runBenchmark() {
   const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
   const iterations = 5;
 
-  // 1. Rust WebAssembly Benchmark (Bilateral Denoise + Unsharp Mask + Sobel)
   const tWasmStart = performance.now();
   for (let i = 0; i < iterations; i++) {
+    processor.apply_tone_curves(luts.master, luts.r, luts.g, luts.b);
     processor.bilateral_filter(2.0, 40.0);
     processor.unsharp_mask(1.5, 1.2, 2);
     processor.sobel_edges();
@@ -227,7 +304,6 @@ function runBenchmark() {
   const wasmTotal = performance.now() - tWasmStart;
   const wasmAvg = (wasmTotal / iterations).toFixed(2);
 
-  // 2. Pure JavaScript Benchmark (Equivalent Convolution Loop)
   const jsData = new Uint8ClampedArray(imgData.data);
   const tJsStart = performance.now();
   for (let iter = 0; iter < iterations; iter++) {
@@ -255,14 +331,13 @@ function runBenchmark() {
   applyFilters();
 }
 
-// 6. Sample Procedural Image Generator
+// 7. Sample Procedural Image Generator
 function loadSampleProceduralImage() {
   const tempCanvas = document.createElement("canvas");
   tempCanvas.width = 1280;
   tempCanvas.height = 720;
   const tCtx = tempCanvas.getContext("2d");
 
-  // Create a sunset gradient landscape
   const grad = tCtx.createLinearGradient(0, 0, 1280, 720);
   grad.addColorStop(0, "#0f172a");
   grad.addColorStop(0.4, "#1e1b4b");
@@ -271,7 +346,6 @@ function loadSampleProceduralImage() {
   tCtx.fillStyle = grad;
   tCtx.fillRect(0, 0, 1280, 720);
 
-  // Sun with soft atmospheric glow
   tCtx.beginPath();
   tCtx.arc(640, 360, 160, 0, Math.PI * 2);
   tCtx.fillStyle = "rgba(255, 230, 120, 0.9)";
@@ -284,8 +358,97 @@ function loadSampleProceduralImage() {
   img.src = tempCanvas.toDataURL();
 }
 
-// 7. Event Listeners & Interactive UI
+// 8. Event Listeners & Interactive Curve Editor
 function setupEventListeners() {
+  // SVG Curve Dragging & Manipulation
+  let draggedPointIdx = null;
+
+  const getSvgCoordinates = (e) => {
+    const rect = els.curveSvg.getBoundingClientRect();
+    const clientX = e.clientX || (e.touches && e.touches[0].clientX);
+    const clientY = e.clientY || (e.touches && e.touches[0].clientY);
+    const x = Math.round(Math.max(0, Math.min(255, ((clientX - rect.left) / rect.width) * 256)));
+    const y = Math.round(Math.max(0, Math.min(255, 256 - ((clientY - rect.top) / rect.height) * 256)));
+    return { x, y };
+  };
+
+  els.curveSvg.addEventListener("pointerdown", (e) => {
+    const coords = getSvgCoordinates(e);
+    const pts = curves[activeChannel];
+
+    // Check if clicked near an existing point
+    let foundIdx = null;
+    pts.forEach((p, idx) => {
+      const dist = Math.hypot(p.x - coords.x, p.y - coords.y);
+      if (dist < 15) foundIdx = idx;
+    });
+
+    if (e.button === 2) {
+      // Right click: Remove point (except boundary 0 and 255)
+      if (foundIdx !== null && foundIdx !== 0 && foundIdx !== pts.length - 1) {
+        pts.splice(foundIdx, 1);
+        updateChannelLut(activeChannel);
+        requestRender();
+      }
+      return;
+    }
+
+    if (foundIdx !== null) {
+      draggedPointIdx = foundIdx;
+    } else {
+      // Add new anchor point
+      pts.push({ x: coords.x, y: coords.y });
+      pts.sort((a, b) => a.x - b.x);
+      draggedPointIdx = pts.findIndex(p => p.x === coords.x && p.y === coords.y);
+      updateChannelLut(activeChannel);
+      requestRender();
+    }
+  });
+
+  window.addEventListener("pointermove", (e) => {
+    if (draggedPointIdx === null) return;
+    const coords = getSvgCoordinates(e);
+    const pts = curves[activeChannel];
+
+    if (draggedPointIdx === 0) {
+      pts[0].y = coords.y; // Pin x=0
+    } else if (draggedPointIdx === pts.length - 1) {
+      pts[pts.length - 1].y = coords.y; // Pin x=255
+    } else {
+      const prevX = pts[draggedPointIdx - 1].x + 2;
+      const nextX = pts[draggedPointIdx + 1].x - 2;
+      pts[draggedPointIdx].x = Math.max(prevX, Math.min(nextX, coords.x));
+      pts[draggedPointIdx].y = coords.y;
+    }
+
+    updateChannelLut(activeChannel);
+    requestRender();
+  });
+
+  window.addEventListener("pointerup", () => {
+    draggedPointIdx = null;
+  });
+
+  els.curveSvg.addEventListener("contextmenu", e => e.preventDefault());
+
+  // Channel Tabs
+  document.querySelectorAll(".channel-tab").forEach(tab => {
+    tab.addEventListener("click", () => {
+      document.querySelectorAll(".channel-tab").forEach(t => t.classList.remove("active"));
+      tab.classList.add("active");
+      activeChannel = tab.dataset.channel;
+      renderCurveSvg();
+    });
+  });
+
+  // Reset Tone Curve
+  els.btnResetCurve.addEventListener("click", () => {
+    curves[activeChannel] = [{ x: 0, y: 0 }, { x: 255, y: 255 }];
+    updateChannelLut(activeChannel);
+    requestRender();
+  });
+
+  // Standard Sliders
   const bindSlider = (el, valEl, key, suffix = "") => {
     if (!el) return;
     el.addEventListener("input", (e) => {
@@ -369,6 +532,15 @@ function setupEventListeners() {
       const p = btn.dataset.preset;
       resetState();
       switch (p) {
+        case "s-curve":
+          curves.master = [{ x: 0, y: 0 }, { x: 64, y: 40 }, { x: 192, y: 215 }, { x: 255, y: 255 }];
+          state.saturation = 1.15;
+          break;
+        case "matte-fade":
+          curves.master = [{ x: 0, y: 35 }, { x: 75, y: 70 }, { x: 180, y: 190 }, { x: 255, y: 220 }];
+          state.contrast = 10;
+          state.saturation = 0.9;
+          break;
         case "portrait-soft":
           state.bilateralSpatial = 2.4;
           state.bilateralRange = 45.0;
@@ -377,13 +549,15 @@ function setupEventListeners() {
           state.saturation = 1.15;
           break;
         case "cinema-punch":
+          curves.master = [{ x: 0, y: 0 }, { x: 70, y: 45 }, { x: 185, y: 210 }, { x: 255, y: 255 }];
           state.unsharpAmount = 1.8;
           state.unsharpRadius = 1.6;
-          state.contrast = 22;
           state.saturation = 1.35;
           state.vignette = 0.45;
           break;
         case "cyberpunk":
+          curves.r = [{ x: 0, y: 0 }, { x: 128, y: 90 }, { x: 255, y: 255 }];
+          curves.b = [{ x: 0, y: 20 }, { x: 128, y: 160 }, { x: 255, y: 255 }];
           state.contrast = 25;
           state.saturation = 1.8;
           state.hue = 290;
@@ -407,13 +581,8 @@ function setupEventListeners() {
           state.unsharpAmount = 1.6;
           state.unsharpRadius = 1.2;
           break;
-        case "warm-sunset":
-          state.brightness = 10;
-          state.contrast = 15;
-          state.hue = 30;
-          state.saturation = 1.5;
-          break;
       }
+      updateAllLuts();
       syncControls();
       requestRender();
     });
@@ -422,6 +591,7 @@ function setupEventListeners() {
   // Reset
   els.btnReset.addEventListener("click", () => {
     resetState();
+    updateAllLuts();
     syncControls();
     if (processor) processor.reset_to_base();
     applyFilters();
@@ -505,6 +675,11 @@ function resetState() {
   state.sepia = false;
   state.invert = false;
   state.grayscale = false;
+
+  curves.master = [{ x: 0, y: 0 }, { x: 255, y: 255 }];
+  curves.r = [{ x: 0, y: 0 }, { x: 255, y: 255 }];
+  curves.g = [{ x: 0, y: 0 }, { x: 255, y: 255 }];
+  curves.b = [{ x: 0, y: 0 }, { x: 255, y: 255 }];
 }
 
 function syncControls() {
