@@ -127,7 +127,7 @@ impl ImageProcessor {
         filters::apply_vignette(&mut self.current_pixels, self.width, self.height, radius, intensity);
     }
 
-    // --- Spatial Convolutions ---
+    // --- Spatial Convolutions & Edge Preserving Filters ---
 
     pub fn gaussian_blur(&mut self, sigma: f32) {
         convolutions::apply_gaussian_blur(&mut self.current_pixels, self.width, self.height, sigma);
@@ -137,6 +137,14 @@ impl ImageProcessor {
         let mut temp = self.current_pixels.clone();
         convolutions::apply_sharpen(&self.current_pixels, &mut temp, self.width, self.height, intensity);
         self.current_pixels = temp;
+    }
+
+    pub fn unsharp_mask(&mut self, sigma: f32, amount: f32, threshold: u8) {
+        convolutions::apply_unsharp_mask(&mut self.current_pixels, self.width, self.height, sigma, amount, threshold);
+    }
+
+    pub fn bilateral_filter(&mut self, spatial_sigma: f32, range_sigma: f32) {
+        convolutions::apply_bilateral_filter(&mut self.current_pixels, self.width, self.height, spatial_sigma, range_sigma);
     }
 
     pub fn emboss(&mut self) {
@@ -203,6 +211,10 @@ impl ImageProcessor {
         gamma: f32,
         blur_sigma: f32,
         sharpen_val: f32,
+        unsharp_amount: f32,
+        unsharp_radius: f32,
+        bilateral_spatial: f32,
+        bilateral_range: f32,
         sepia_active: bool,
         invert_active: bool,
         grayscale_active: bool,
@@ -237,6 +249,9 @@ impl ImageProcessor {
         if vignette_intensity > 0.01 {
             filters::apply_vignette(&mut self.current_pixels, self.width, self.height, 1.2, vignette_intensity);
         }
+        if bilateral_spatial > 0.1 && bilateral_range > 0.1 {
+            convolutions::apply_bilateral_filter(&mut self.current_pixels, self.width, self.height, bilateral_spatial, bilateral_range);
+        }
         if blur_sigma > 0.1 {
             convolutions::apply_gaussian_blur(&mut self.current_pixels, self.width, self.height, blur_sigma);
         }
@@ -244,6 +259,9 @@ impl ImageProcessor {
             let mut temp = self.current_pixels.clone();
             convolutions::apply_sharpen(&self.current_pixels, &mut temp, self.width, self.height, sharpen_val);
             self.current_pixels = temp;
+        }
+        if unsharp_amount > 0.05 && unsharp_radius > 0.1 {
+            convolutions::apply_unsharp_mask(&mut self.current_pixels, self.width, self.height, unsharp_radius, unsharp_amount, 2);
         }
     }
 }

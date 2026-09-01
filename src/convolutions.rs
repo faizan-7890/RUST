@@ -1,4 +1,4 @@
-//! 2D Spatial Convolutions & Kernel Filters (Gaussian Blur, Sobel, Sharpen, Emboss).
+//! 2D Spatial Convolutions & Kernel Filters (Gaussian Blur, Bilateral Filter, Unsharp Mask, Sobel, Sharpen, Emboss).
 
 #[inline(always)]
 fn clamp_u8(val: f32) -> u8 {
@@ -157,6 +157,117 @@ pub fn apply_gaussian_blur(buffer: &mut [u8], width: u32, height: u32, sigma: f3
             buffer[out_idx + 1] = clamp_u8(g);
             buffer[out_idx + 2] = clamp_u8(b);
             buffer[out_idx + 3] = clamp_u8(a);
+        }
+    }
+}
+
+/// Applies Edge-Preserving Bilateral Filter for skin smoothing and noise reduction.
+/// `spatial_sigma`: Geometric spread of spatial Gaussian (typically 1.0 - 5.0).
+/// `range_sigma`: Color/photometric distance tolerance (typically 15.0 - 80.0).
+pub fn apply_bilateral_filter(buffer: &mut [u8], width: u32, height: u32, spatial_sigma: f32, range_sigma: f32) {
+    if spatial_sigma <= 0.1 || range_sigma <= 0.1 {
+        return;
+    }
+
+    let radius = (spatial_sigma * 2.0).ceil().clamp(1.0, 5.0) as i32;
+    let w = width as i32;
+    let h = height as i32;
+
+    // 1. Precompute Spatial Gaussian weights for distances dx^2 + dy^2
+    let two_spatial_sq = 2.0 * spatial_sigma * spatial_sigma;
+    let two_range_sq = 2.0 * range_sigma * range_sigma;
+
+    let mut spatial_weights = Vec::with_capacity(((2 * radius + 1) * (2 * radius + 1)) as usize);
+    for dy in -radius..=radius {
+        for dx in -radius..=radius {
+            let dist_sq = (dx * dx + dy * dy) as f32;
+            spatial_weights.push((-dist_sq / two_spatial_sq).exp());
+        }
+    }
+
+    // 2. Precompute 256-entry Range Gaussian LUT for photometric intensity differences
+    let mut range_lut = [0.0f32; 256];
+    for diff in 0..256 {
+        let d = diff as f32;
+        range_lut[diff] = (- (d * d) / two_range_sq).exp();
+    }
+
+    let src = buffer.to_vec();
+
+    for y in 0..h {
+        for x in 0..w {
+            let center_idx = ((y * w + x) * 4) as usize;
+            let c_r = src[center_idx] as i32;
+            let c_g = src[center_idx + 1] as i32;
+            let c_b = src[center_idx + 2] as i32;
+
+            let mut r_acc = 0.0f32;
+            let mut g_acc = 0.0f32;
+            let mut b_acc = 0.0f32;
+            let mut total_weight = 0.0f32;
+
+            let mut s_idx = 0;
+            for dy in -radius..=radius {
+                let py = (y + dy).clamp(0, h - 1);
+                for dx in -radius..=radius {
+                    let px = (x + dx).clamp(0, w - 1);
+                    let p_idx = ((py * w + px) * 4) as usize;
+
+                    let p_r = src[p_idx] as i32;
+                    let p_g = src[p_idx + 1] as i32;
+                    let p_b = src[p_idx + 2] as i32;
+
+                    // Color Euclidean difference approximation via max channel or luminance delta
+                    let diff_r = (p_r - c_r).abs() as usize;
+                    let diff_g = (p_g - c_g).abs() as usize;
+                    let diff_b = (p_b - c_b).abs() as usize;
+                    let color_diff = ((diff_r + diff_g + diff_b) / 3).min(255);
+
+                    let sw = spatial_weights[s_idx];
+                    let rw = range_lut[color_diff];
+                    let weight = sw * rw;
+
+                    r_acc += p_r as f32 * weight;
+                    g_acc += p_g as f32 * weight;
+                    b_acc += p_b as f32 * weight;
+                    total_weight += weight;
+
+                    s_idx += 1;
+                }
+            }
+
+            if total_weight > 0.0 {
+                buffer[center_idx] = clamp_u8(r_acc / total_weight);
+                buffer[center_idx + 1] = clamp_u8(g_acc / total_weight);
+                buffer[center_idx + 2] = clamp_u8(b_acc / total_weight);
+            }
+        }
+    }
+}
+
+/// Applies Professional Unsharp Masking (USM) for high-frequency edge enhancement.
+/// `amount`: Sharpening intensity multiplier (typically 0.5 - 3.0).
+/// `sigma`: Gaussian blur radius for high-pass frequency separation.
+/// `threshold`: Minimum tonal difference before edge enhancement triggers (0 - 20).
+pub fn apply_unsharp_mask(buffer: &mut [u8], width: u32, height: u32, sigma: f32, amount: f32, threshold: u8) {
+    if amount <= 0.01 || sigma <= 0.1 {
+        return;
+    }
+
+    let mut blurred = buffer.to_vec();
+    apply_gaussian_blur(&mut blurred, width, height, sigma);
+
+    let thresh = threshold as i32;
+    for (orig_chunk, blur_chunk) in buffer.chunks_exact_mut(4).zip(blurred.chunks_exact(4)) {
+        for c in 0..3 {
+            let orig_val = orig_chunk[c] as i32;
+            let blur_val = blur_chunk[c] as i32;
+            let diff = orig_val - blur_val;
+
+            if diff.abs() >= thresh {
+                let sharpened = orig_val as f32 + amount * (diff as f32);
+                orig_chunk[c] = clamp_u8(sharpened);
+            }
         }
     }
 }

@@ -110,6 +110,8 @@
           <h3 class="group-heading">One-Click Presets</h3>
           <div class="preset-grid">
             <button class="preset-pill" data-preset="normal">Default</button>
+            <button class="preset-pill" data-preset="portrait-soft">Portrait Soft</button>
+            <button class="preset-pill" data-preset="cinema-punch">Cinema Punch</button>
             <button class="preset-pill" data-preset="cyberpunk">Cyberpunk</button>
             <button class="preset-pill" data-preset="vintage">Vintage Film</button>
             <button class="preset-pill" data-preset="dramatic-bw">Dramatic B&W</button>
@@ -149,14 +151,35 @@
 
         <!-- Convolutions & Spatial Filters -->
         <div class="sidebar-group">
-          <h3 class="group-heading">Spatial Filters</h3>
+          <h3 class="group-heading">Spatial & Edge Filtering</h3>
           <div class="control-row">
             <label for="sliderBlur">Gaussian Blur (Sigma) <span id="valBlur">0.0</span></label>
             <input type="range" id="sliderBlur" min="0" max="10" step="0.2" value="0">
           </div>
           <div class="control-row">
-            <label for="sliderSharpen">Sharpen <span id="valSharpen">0.0</span></label>
+            <label for="sliderSharpen">3x3 Sharpen <span id="valSharpen">0.0</span></label>
             <input type="range" id="sliderSharpen" min="0" max="2" step="0.1" value="0">
+          </div>
+          <div class="control-row">
+            <label for="sliderUnsharpAmount">Unsharp Mask (USM Amount) <span id="valUnsharpAmount">0.0</span></label>
+            <input type="range" id="sliderUnsharpAmount" min="0" max="3.0" step="0.1" value="0">
+          </div>
+          <div class="control-row">
+            <label for="sliderUnsharpRadius">Unsharp Radius (Sigma) <span id="valUnsharpRadius">1.0</span></label>
+            <input type="range" id="sliderUnsharpRadius" min="0.5" max="5.0" step="0.2" value="1.0">
+          </div>
+        </div>
+
+        <!-- Edge-Preserving Denoising -->
+        <div class="sidebar-group">
+          <h3 class="group-heading">Bilateral Denoising (Skin Smoothing)</h3>
+          <div class="control-row">
+            <label for="sliderBilateralSpatial">Spatial Smoothness <span id="valBilateralSpatial">0.0</span></label>
+            <input type="range" id="sliderBilateralSpatial" min="0" max="4.0" step="0.2" value="0">
+          </div>
+          <div class="control-row">
+            <label for="sliderBilateralRange">Edge Color Tolerance <span id="valBilateralRange">30</span></label>
+            <input type="range" id="sliderBilateralRange" min="10" max="100" step="5" value="30">
           </div>
         </div>
 

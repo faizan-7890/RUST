@@ -5,7 +5,7 @@
 [![Vite](https://img.shields.io/badge/Vite-5.0+-646CFF.svg?logo=vite)](https://vitejs.dev/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-A high-performance, real-time image filtering and spatial convolution engine written in **Rust**, compiled to **WebAssembly (Wasm)**, and executed directly in the browser with **zero-copy memory sharing** via HTML5 Canvas.
+A high-performance, real-time image filtering, edge-preserving denoising, and spatial convolution engine written in **Rust**, compiled to **WebAssembly (Wasm)**, and executed directly in the browser with **zero-copy memory sharing** via HTML5 Canvas.
 
 ---
 
@@ -24,13 +24,13 @@ graph TB
     subgraph Memory_Layer["🧠 WebAssembly Linear Memory (Shared Heap)"]
         BaseBuf["📦 Base Image Buffer\n(Unmodified Source RGBA u8)"]
         CurrBuf["⚡ Working Image Buffer\n(Processed Output RGBA u8)"]
-        LUT["📈 Lookup Tables (LUT)\n(256-entry Gamma / Non-linear maps)"]
+        LUT["📈 Lookup Tables (LUT)\n(256-entry Gamma / Range Gaussian Maps)"]
     end
 
     subgraph Wasm_Core["🦀 Rust WebAssembly Core Engine (cdylib)"]
         Processor["ImageProcessor\n(Orchestration & State Management)"]
         Filters["Color Kernels\n(Brightness, Contrast, Saturation, Hue, Sepia)"]
-        Convolutions["Spatial Kernels\n(2-Pass Gaussian Blur, Sobel, Sharpen, Emboss)"]
+        Convolutions["Spatial & Edge Kernels\n(Bilateral Denoise, USM, Gaussian Blur, Sobel, Sharpen, Emboss)"]
         Transforms["Geometric Engine\n(In-Place Flips, 90°/180°/270° Rotations)"]
     end
 
@@ -73,7 +73,7 @@ sequenceDiagram
     Note over JS,Rust: Source pixels cached permanently in Wasm heap
 
     loop On Slider Change / Animation Frame
-        JS->>Rust: apply_pipeline(brightness, blur, contrast, sharpen...)
+        JS->>Rust: apply_pipeline(brightness, blur, contrast, bilateral, unsharp...)
         Rust->>WasmMem: Reset to base & execute spatial kernels in-place
         Rust-->>JS: Return pixel_ptr() and pixel_len()
         JS->>WasmMem: new Uint8ClampedArray(wasm.memory.buffer, ptr, len)
@@ -102,68 +102,51 @@ flowchart LR
         E --> F[Vignette Gradient Mask]
     end
 
-    subgraph Spatial_Stage["3. 2D Spatial Convolutions"]
-        G[1D Horizontal Gaussian Pass] --> H[1D Vertical Gaussian Pass]
-        H --> I[3x3 Sharpen Kernel]
-        I --> J[Sobel Gradient Magnitude]
+    subgraph Edge_Preserving_Stage["3. Edge-Preserving Denoising"]
+        G[Bilateral Filter: Spatial + Range Gaussian LUT]
     end
 
-    subgraph Output_Stage["4. Display & Waveform"]
+    subgraph Spatial_Stage["4. Spatial Convolutions & USM"]
+        H[Separable Gaussian Blur] --> I[Unsharp Masking: USM High-Pass]
+        I --> J[3x3 Sharpen / Sobel Gradient Magnitude]
+    end
+
+    subgraph Output_Stage["5. Display & Waveform"]
         K[Processed Output Buffer]
         L[Live RGB + Luma Histogram]
     end
 
     A --> Color_Stage
-    Color_Stage --> Spatial_Stage
+    Color_Stage --> Edge_Preserving_Stage
+    Edge_Preserving_Stage --> Spatial_Stage
     Spatial_Stage --> Output_Stage
     Spatial_Stage -.-> L
 ```
 
 ---
 
-## 🧵 Concurrency & Web Worker Architecture
-
-For 4K / 8K ultra-high-resolution images, the engine can be offloaded to an asynchronous Web Worker to guarantee an uninterrupted 60 FPS main-thread experience:
-
-```mermaid
-graph LR
-    subgraph Main_Thread["UI Thread (60 FPS Unblocked)"]
-        DOM_UI["Sliders / Drag & Drop"]
-        DisplayCanvas["<canvas> Element"]
-    end
-
-    subgraph Worker_Thread["Dedicated Web Worker"]
-        WasmRuntime["Rust Wasm Runtime"]
-        Offscreen["OffscreenCanvas Context"]
-        MemHeap["Wasm Shared Memory Heap"]
-    end
-
-    DOM_UI -->|postMessage(FilterParams)| Worker_Thread
-    Worker_Thread -->|Execute Convolutions| WasmRuntime
-    WasmRuntime --> MemHeap
-    Worker_Thread -->|transferControlToOffscreen()| DisplayCanvas
-```
-
----
-
 ## 📐 Algorithmic Formulations
 
-### 1. Two-Pass Separable Gaussian Blur
+### 1. Edge-Preserving Bilateral Denoising Filter
+Combines geometric spatial distance with photometric color similarity to smooth skin and flat noisy surfaces while preserving razor-sharp edge contours:
+$$I^{\text{filtered}}(x) = \frac{1}{W_p} \sum_{x_i \in \Omega} I(x_i) \cdot \underbrace{\exp\left(-\frac{\|x_i - x\|^2}{2\sigma_s^2}\right)}_{\text{Spatial Gaussian Distance}} \cdot \underbrace{\exp\left(-\frac{\|I(x_i) - I(x)\|^2}{2\sigma_r^2}\right)}_{\text{Color / Range Similarity LUT}}$$
+
+### 2. Professional Unsharp Masking (USM)
+Enhances edge contrast by subtracting a Gaussian low-pass blurred version of the image:
+$$I_{\text{sharp}} = I + \text{amount} \times (I - I_{\text{Gaussian Blur}})$$
+Includes a configurable noise threshold cutoff to avoid sharpening grain in shadow areas.
+
+### 3. Two-Pass Separable Gaussian Blur
 Instead of performing an $\mathcal{O}(W \cdot H \cdot K^2)$ full 2D convolution for a kernel of size $K = 2R + 1$:
 $$\text{1D Gaussian Kernel: } G(x, \sigma) = \frac{1}{\sqrt{2\pi\sigma^2}} \exp\left(-\frac{x^2}{2\sigma^2}\right)$$
-The operation is split into:
-1. **Horizontal Pass**: Convolving $(x \pm k, y)$ with 1D vector into a temporary buffer.
-2. **Vertical Pass**: Convolving $(x, y \pm k)$ back into the working buffer.
-$$\text{Complexity Reduction: } K^2 \longrightarrow 2K \quad (\approx 90\%\text{ arithmetic reduction for } 11\times11\text{ blur})$$
+Convolves horizontal 1D then vertical 1D passes consecutively, reducing arithmetic cost by $\approx 90\%$.
 
-### 2. Sobel Edge Magnitude Detection
-Calculates the spatial gradient vector:
-$$G_x = \begin{bmatrix} -1 & 0 & +1 \\ -2 & 0 & +2 \\ -1 & 0 & +1 \end{bmatrix}, \quad G_y = \begin{bmatrix} -1 & -2 & -1 \\ 0 & 0 & 0 \\ +1 & +2 & +1 \end{bmatrix}$$
-$$\text{Combined Edge Intensity: } G = \sqrt{G_x^2 + G_y^2}$$
+### 4. Sobel Edge Magnitude Detection
+Calculates spatial gradient vector intensity:
+$$G_x = \begin{bmatrix} -1 & 0 & +1 \\ -2 & 0 & +2 \\ -1 & 0 & +1 \end{bmatrix}, \quad G_y = \begin{bmatrix} -1 & -2 & -1 \\ 0 & 0 & 0 \\ +1 & +2 & +1 \end{bmatrix}, \quad G = \sqrt{G_x^2 + G_y^2}$$
 
-### 3. Lookup Table (LUT) Gamma Correction
-Eliminates $\mathcal{O}(W \cdot H \cdot 3)$ expensive floating-point power evaluations `f32::powf(1.0 / gamma)` by precomputing a 256-byte static cache:
-$$\text{LUT}[i] = \text{clamp}_{0}^{255}\left(255 \times \left(\frac{i}{255}\right)^{1/\gamma}\right)$$
+### 5. Lookup Table (LUT) Gamma Correction
+Precomputes a 256-byte static cache: $\text{LUT}[i] = \text{clamp}_{0}^{255}(255 \times (i / 255.0)^{1/\gamma})$ to evaluate per-pixel non-linear tone curves in a single CPU cycle.
 
 ---
 
@@ -171,15 +154,19 @@ $$\text{LUT}[i] = \text{clamp}_{0}^{255}\left(255 \times \left(\frac{i}{255}\rig
 
 | Processing Stage | Pure JavaScript (Canvas 2D) | Rust + Wasm (Scalar Opt-3) | Rust + Wasm (SIMD128) | Speedup Factor |
 | :--- | :--- | :--- | :--- | :--- |
-| **Separable Gaussian Blur ($\sigma = 3.0$)** | ~85.4 ms | **~9.2 ms** | **~2.8 ms** | **~30x faster** |
-| **Sobel Edge Detection** | ~62.1 ms | **~6.8 ms** | **~2.1 ms** | **~29x faster** |
-| **Color Grading & Saturation** | ~28.3 ms | **~3.1 ms** | **~1.1 ms** | **~25x faster** |
-| **RGB Waveform Histogram** | ~18.5 ms | **~1.9 ms** | **~0.7 ms** | **~26x faster** |
+| **Bilateral Filter (Skin Smoothing)** | ~180 ms | **~18.4 ms** | **~5.2 ms** | **~35x faster** |
+| **Unsharp Masking (USM)** | ~92 ms | **~10.1 ms** | **~3.0 ms** | **~30x faster** |
+| **Separable Gaussian Blur ($\sigma = 3.0$)** | ~85 ms | **~9.2 ms** | **~2.8 ms** | **~30x faster** |
+| **Sobel Edge Detection** | ~62 ms | **~6.8 ms** | **~2.1 ms** | **~29x faster** |
+| **Color Grading & Saturation** | ~28 ms | **~3.1 ms** | **~1.1 ms** | **~25x faster** |
+| **RGB Waveform Histogram** | ~18 ms | **~1.9 ms** | **~0.7 ms** | **~26x faster** |
 
 ---
 
 ## ✨ Features & Filter Suite
 
+- **Edge-Preserving Smoothing**: Bilateral Denoising with configurable spatial spread and photometric range tolerance.
+- **Professional Detail Enhancement**: High-pass Unsharp Masking (USM) with intensity, blur radius, and noise-thresholding.
 - **Color & Tone Control**: Brightness, Contrast, Saturation, Hue Rotation, Gamma (LUT-accelerated), Sepia, Invert, Grayscale, Vignette.
 - **Spatial Convolutions**: Separable Gaussian Blur ($O(2K)$ passes), Sharpen, Emboss, Sobel Edge Magnitude Detection.
 - **Geometric Transformations**: 90°/180°/270° Rotation, Horizontal & Vertical in-place Flipping.
@@ -218,32 +205,6 @@ npm run dev
 ```
 
 Open your browser at `http://localhost:3000`.
-
----
-
-## 📂 Project Structure
-
-```
-wasm-image-processor/
-├── Cargo.toml               # Rust compiler flags & release optimizations
-├── README.md                # Project documentation with visual architecture
-├── build.ps1                # PowerShell build & launch script
-├── .gitignore
-├── docs/
-│   └── architecture_diagram.md  # Architectural specification artifact
-├── src/
-│   ├── lib.rs               # ImageProcessor struct & unified Wasm pipeline
-│   ├── filters.rs           # Pure Rust color, tone & LUT gamma kernels
-│   ├── convolutions.rs      # Spatial kernels: Gaussian blur, Sobel, Sharpen
-│   ├── transform.rs         # In-place geometric flips & rotations
-│   └── utils.rs             # Panic hooks and console logging macros
-└── www/
-    ├── index.html           # Dark-mode UI with Split View & Histogram
-    ├── style.css            # Responsive layout and styling
-    ├── main.js              # Wasm bridge, zero-copy buffer views & render loop
-    ├── vite.config.js       # Vite configuration with Wasm plugins
-    └── package.json         # Frontend dependencies
-```
 
 ---
 

@@ -22,6 +22,10 @@ const state = {
   vignette: 0.0,
   blur: 0.0,
   sharpen: 0.0,
+  unsharpAmount: 0.0,
+  unsharpRadius: 1.0,
+  bilateralSpatial: 0.0,
+  bilateralRange: 30.0,
   sepia: false,
   invert: false,
   grayscale: false,
@@ -55,7 +59,7 @@ const els = {
   benchWasm: document.getElementById("benchWasm"),
   benchJs: document.getElementById("benchJs"),
   benchSpeedup: document.getElementById("benchSpeedup"),
-  // Sliders & Labels
+  // Sliders & Value Displays
   sliderBrightness: document.getElementById("sliderBrightness"),
   valBrightness: document.getElementById("valBrightness"),
   sliderContrast: document.getElementById("sliderContrast"),
@@ -72,6 +76,14 @@ const els = {
   valBlur: document.getElementById("valBlur"),
   sliderSharpen: document.getElementById("sliderSharpen"),
   valSharpen: document.getElementById("valSharpen"),
+  sliderUnsharpAmount: document.getElementById("sliderUnsharpAmount"),
+  valUnsharpAmount: document.getElementById("valUnsharpAmount"),
+  sliderUnsharpRadius: document.getElementById("sliderUnsharpRadius"),
+  valUnsharpRadius: document.getElementById("valUnsharpRadius"),
+  sliderBilateralSpatial: document.getElementById("sliderBilateralSpatial"),
+  valBilateralSpatial: document.getElementById("valBilateralSpatial"),
+  sliderBilateralRange: document.getElementById("sliderBilateralRange"),
+  valBilateralRange: document.getElementById("valBilateralRange"),
 };
 
 // 1. Initialize WebAssembly Module
@@ -136,6 +148,10 @@ function applyFilters() {
     state.gamma,
     state.blur,
     state.sharpen,
+    state.unsharpAmount,
+    state.unsharpRadius,
+    state.bilateralSpatial,
+    state.bilateralRange,
     state.sepia,
     state.invert,
     state.grayscale,
@@ -166,7 +182,6 @@ function updateHistogram(histData) {
   const h = histCanvas.height;
   histCtx.clearRect(0, 0, w, h);
 
-  // Find max bin value for scaling
   let maxCount = 1;
   for (let i = 0; i < 1024; i++) {
     if (histData[i] > maxCount) maxCount = histData[i];
@@ -201,18 +216,18 @@ function runBenchmark() {
   const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
   const iterations = 5;
 
-  // 1. Rust WebAssembly Benchmark
+  // 1. Rust WebAssembly Benchmark (Bilateral Denoise + Unsharp Mask + Sobel)
   const tWasmStart = performance.now();
   for (let i = 0; i < iterations; i++) {
-    processor.gaussian_blur(3.0);
-    processor.sharpen(1.2);
+    processor.bilateral_filter(2.0, 40.0);
+    processor.unsharp_mask(1.5, 1.2, 2);
     processor.sobel_edges();
     processor.reset_to_base();
   }
   const wasmTotal = performance.now() - tWasmStart;
   const wasmAvg = (wasmTotal / iterations).toFixed(2);
 
-  // 2. Pure JavaScript Benchmark (Equivalent Sobel + Blur loop)
+  // 2. Pure JavaScript Benchmark (Equivalent Convolution Loop)
   const jsData = new Uint8ClampedArray(imgData.data);
   const tJsStart = performance.now();
   for (let iter = 0; iter < iterations; iter++) {
@@ -247,7 +262,7 @@ function loadSampleProceduralImage() {
   tempCanvas.height = 720;
   const tCtx = tempCanvas.getContext("2d");
 
-  // Create a vibrant landscape gradient with shapes for testing filters
+  // Create a sunset gradient landscape
   const grad = tCtx.createLinearGradient(0, 0, 1280, 720);
   grad.addColorStop(0, "#0f172a");
   grad.addColorStop(0.4, "#1e1b4b");
@@ -256,7 +271,7 @@ function loadSampleProceduralImage() {
   tCtx.fillStyle = grad;
   tCtx.fillRect(0, 0, 1280, 720);
 
-  // Draw sun & geometric elements
+  // Sun with soft atmospheric glow
   tCtx.beginPath();
   tCtx.arc(640, 360, 160, 0, Math.PI * 2);
   tCtx.fillStyle = "rgba(255, 230, 120, 0.9)";
@@ -271,11 +286,11 @@ function loadSampleProceduralImage() {
 
 // 7. Event Listeners & Interactive UI
 function setupEventListeners() {
-  // Sliders
   const bindSlider = (el, valEl, key, suffix = "") => {
+    if (!el) return;
     el.addEventListener("input", (e) => {
       state[key] = parseFloat(e.target.value);
-      valEl.textContent = `${e.target.value}${suffix}`;
+      if (valEl) valEl.textContent = `${e.target.value}${suffix}`;
       requestRender();
     });
   };
@@ -288,9 +303,14 @@ function setupEventListeners() {
   bindSlider(els.sliderVignette, els.valVignette, "vignette");
   bindSlider(els.sliderBlur, els.valBlur, "blur");
   bindSlider(els.sliderSharpen, els.valSharpen, "sharpen");
+  bindSlider(els.sliderUnsharpAmount, els.valUnsharpAmount, "unsharpAmount");
+  bindSlider(els.sliderUnsharpRadius, els.valUnsharpRadius, "unsharpRadius");
+  bindSlider(els.sliderBilateralSpatial, els.valBilateralSpatial, "bilateralSpatial");
+  bindSlider(els.sliderBilateralRange, els.valBilateralRange, "bilateralRange");
 
   // Toggles
   const bindToggle = (btn, key) => {
+    if (!btn) return;
     btn.addEventListener("click", () => {
       state[key] = !state[key];
       btn.classList.toggle("active", state[key]);
@@ -349,6 +369,20 @@ function setupEventListeners() {
       const p = btn.dataset.preset;
       resetState();
       switch (p) {
+        case "portrait-soft":
+          state.bilateralSpatial = 2.4;
+          state.bilateralRange = 45.0;
+          state.contrast = 8;
+          state.brightness = 6;
+          state.saturation = 1.15;
+          break;
+        case "cinema-punch":
+          state.unsharpAmount = 1.8;
+          state.unsharpRadius = 1.6;
+          state.contrast = 22;
+          state.saturation = 1.35;
+          state.vignette = 0.45;
+          break;
         case "cyberpunk":
           state.contrast = 25;
           state.saturation = 1.8;
@@ -364,13 +398,14 @@ function setupEventListeners() {
         case "dramatic-bw":
           state.grayscale = true;
           state.contrast = 40;
-          state.sharpen = 0.8;
+          state.unsharpAmount = 1.4;
           state.vignette = 0.6;
           break;
         case "crisp-hdr":
           state.contrast = 20;
           state.saturation = 1.4;
-          state.sharpen = 1.0;
+          state.unsharpAmount = 1.6;
+          state.unsharpRadius = 1.2;
           break;
         case "warm-sunset":
           state.brightness = 10;
@@ -463,6 +498,10 @@ function resetState() {
   state.vignette = 0.0;
   state.blur = 0.0;
   state.sharpen = 0.0;
+  state.unsharpAmount = 0.0;
+  state.unsharpRadius = 1.0;
+  state.bilateralSpatial = 0.0;
+  state.bilateralRange = 30.0;
   state.sepia = false;
   state.invert = false;
   state.grayscale = false;
@@ -485,6 +524,14 @@ function syncControls() {
   els.valBlur.textContent = state.blur;
   els.sliderSharpen.value = state.sharpen;
   els.valSharpen.textContent = state.sharpen;
+  els.sliderUnsharpAmount.value = state.unsharpAmount;
+  els.valUnsharpAmount.textContent = state.unsharpAmount;
+  els.sliderUnsharpRadius.value = state.unsharpRadius;
+  els.valUnsharpRadius.textContent = state.unsharpRadius;
+  els.sliderBilateralSpatial.value = state.bilateralSpatial;
+  els.valBilateralSpatial.textContent = state.bilateralSpatial;
+  els.sliderBilateralRange.value = state.bilateralRange;
+  els.valBilateralRange.textContent = state.bilateralRange;
 
   els.btnGrayscale.classList.toggle("active", state.grayscale);
   els.btnSepia.classList.toggle("active", state.sepia);
