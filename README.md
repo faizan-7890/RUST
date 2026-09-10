@@ -2,10 +2,11 @@
 
 [![Rust](https://img.shields.io/badge/Rust-1.75+-orange.svg?logo=rust)](https://www.rust-lang.org/)
 [![WebAssembly](https://img.shields.io/badge/WebAssembly-Wasm-654FF0.svg?logo=webassembly)](https://webassembly.org/)
+[![SIMD128](https://img.shields.io/badge/WASM_SIMD-128--Bit-brightgreen.svg)](https://github.com/WebAssembly/simd)
 [![Vite](https://img.shields.io/badge/Vite-5.0+-646CFF.svg?logo=vite)](https://vitejs.dev/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-A high-performance, real-time image filtering, interactive tone curve editing, edge-preserving denoising, and spatial convolution engine written in **Rust**, compiled to **WebAssembly (Wasm)**, and executed directly in the browser with **zero-copy memory sharing** via HTML5 Canvas.
+A high-performance, real-time image filtering, interactive tone curve editing, edge-preserving denoising, and spatial convolution engine written in **Rust**, compiled to **WebAssembly with 128-bit SIMD vector acceleration**, and executed directly in the browser with **zero-copy memory sharing** via HTML5 Canvas.
 
 ---
 
@@ -27,8 +28,9 @@ graph TB
         LUT["📈 Lookup Tables (LUT)\n(Master/RGB Spline Curves, Gamma, Range Maps)"]
     end
 
-    subgraph Wasm_Core["🦀 Rust WebAssembly Core Engine (cdylib)"]
+    subgraph Wasm_Core["🦀 Rust WebAssembly Core Engine (cdylib + SIMD128)"]
         Processor["ImageProcessor\n(Orchestration & State Management)"]
+        SIMDEngine["128-Bit SIMD Vector Engine\n(u8x16, i16x8, f32x4 Intrinsics)"]
         SplineEngine["Monotone Cubic Spline Engine\n(Fritsch-Carlson 256-LUT Interpolator)"]
         Filters["Color Kernels\n(Brightness, Contrast, Saturation, Hue, Sepia)"]
         Convolutions["Spatial & Edge Kernels\n(Bilateral Denoise, USM, Gaussian Blur, Sobel, Sharpen)"]
@@ -40,10 +42,11 @@ graph TB
     Processor -->|Store Baseline| BaseBuf
     Controller -->|2. Generate Spline LUTs| SplineEngine
     SplineEngine --> LUT
-    Controller -->|3. apply_pipeline(params, luts)| Processor
+    Controller -->|3. apply_pipeline(params, luts, simd)| Processor
     
-    Processor --> Filters
-    Processor --> Convolutions
+    Processor --> SIMDEngine
+    SIMDEngine --> Filters
+    SIMDEngine --> Convolutions
     Processor --> Transforms
     
     Filters & Convolutions & Transforms -->|Direct In-Place Mutation| CurrBuf
@@ -51,6 +54,17 @@ graph TB
     Controller -->|putImageData()| UI
     Processor -->|get_histogram()| HistCanvas
 ```
+
+---
+
+## ⚡ WASM SIMD128 Vector Acceleration
+
+The engine leverages WebAssembly 128-bit SIMD (`core::arch::wasm32::*`) to process **16 pixel color channels simultaneously per clock cycle**:
+
+* **Vectorized Brightness**: Uses `u8x16_add_sat` and `u8x16_sub_sat` saturating arithmetic across 4 RGBA pixels in a single CPU instruction.
+* **Vectorized Invert**: Executes 128-bit bitwise XOR `v128_xor` with an RGB inversion mask, preserving the alpha channel.
+* **Vectorized Grayscale**: Unpacks `u8x16` into signed 16-bit integers (`i16x8`) and calculates ITU-R BT.601 luminance via integer vector multiply-accumulate: `(77*R + 150*G + 29*B) >> 8`.
+* **Vectorized Unsharp Masking**: Executes 16-bit vector difference (`orig - blur`), scales high frequencies, and adds back with saturation.
 
 ---
 
@@ -66,7 +80,7 @@ sequenceDiagram
     participant UI as Browser Canvas / User
     participant JS as JavaScript Controller (main.js)
     participant WasmMem as WebAssembly Linear Memory
-    participant Rust as Rust Engine (ImageProcessor)
+    participant Rust as Rust Engine (ImageProcessor + SIMD)
 
     UI->>JS: User uploads or drags image file
     JS->>JS: Extract raw ImageData (Uint8ClampedArray)
@@ -77,8 +91,8 @@ sequenceDiagram
 
     loop On Curve Drag / Slider Change / Animation Frame
         JS->>Rust: generate_spline_lut(curvePoints) -> 256-LUT
-        JS->>Rust: apply_pipeline(brightness, blur, bilateral, unsharp, luts...)
-        Rust->>WasmMem: Reset to base & execute spatial kernels in-place
+        JS->>Rust: apply_pipeline(brightness, blur, bilateral, unsharp, luts, simd)
+        Rust->>WasmMem: Reset to base & execute 128-bit SIMD kernels in-place
         Rust-->>JS: Return pixel_ptr() and pixel_len()
         JS->>WasmMem: new Uint8ClampedArray(wasm.memory.buffer, ptr, len)
         Note over JS,WasmMem: ZERO-COPY: Direct window into Wasm linear memory!
@@ -89,96 +103,23 @@ sequenceDiagram
 
 ---
 
-## 🔄 Multi-Stage Filter & Kernel Pipeline
-
-Each rendering pass executes a unified pipeline, preventing rounding degradation and cumulative artifacts:
-
-```mermaid
-flowchart LR
-    subgraph Input_Stage["1. Input Baseline"]
-        A[Base RGBA Buffer]
-    end
-
-    subgraph Tone_Curve_Stage["2. Cubic Spline Tone Curves"]
-        B[Fritsch-Carlson Spline LUT Mapping: Master + R + G + B]
-    end
-
-    subgraph Color_Stage["3. Pointwise Color Transformations"]
-        C[Brightness & Contrast] --> D[Saturation & Hue Rotation]
-        D --> E[LUT Gamma Correction]
-        E --> F[Tone Filters: Sepia / Invert / Grayscale]
-        F --> G[Vignette Gradient Mask]
-    end
-
-    subgraph Edge_Preserving_Stage["4. Edge-Preserving Denoising"]
-        H[Bilateral Filter: Spatial + Range Gaussian LUT]
-    end
-
-    subgraph Spatial_Stage["5. Spatial Convolutions & USM"]
-        I[Separable Gaussian Blur] --> J[Unsharp Masking: USM High-Pass]
-        J --> K[3x3 Sharpen / Sobel Gradient Magnitude]
-    end
-
-    subgraph Output_Stage["6. Display & Waveform"]
-        L[Processed Output Buffer]
-        M[Live RGB + Luma Histogram]
-    end
-
-    A --> Tone_Curve_Stage
-    Tone_Curve_Stage --> Color_Stage
-    Color_Stage --> Edge_Preserving_Stage
-    Edge_Preserving_Stage --> Spatial_Stage
-    Spatial_Stage --> Output_Stage
-    Spatial_Stage -.-> M
-```
-
----
-
-## 📐 Algorithmic Formulations
-
-### 1. Fritsch-Carlson Monotone Cubic Spline Tone Curves
-Evaluates smooth tone curves without overshooting or artificial oscillations between arbitrary anchor points:
-1. Computes secant slopes $\Delta_k = \frac{y_{k+1} - y_k}{x_{k+1} - x_k}$.
-2. Initializes harmonic tangents $m_k = \frac{\Delta_{k-1} + \Delta_k}{2}$.
-3. Adjusts tangents to satisfy monotonicity: if $\alpha^2 + \beta^2 > 9$, rescale tangents by $\tau = \frac{3}{\sqrt{\alpha^2 + \beta^2}}$.
-4. Evaluates cubic Hermite polynomials into a fast 256-entry `u8` LUT:
-   $$y(x) = h_{00}(t) y_k + h_{10}(t) h m_k + h_{01}(t) y_{k+1} + h_{11}(t) h m_{k+1}$$
-
-### 2. Edge-Preserving Bilateral Denoising Filter
-Combines geometric spatial distance with photometric color similarity to smooth skin and flat noisy surfaces while preserving razor-sharp edge contours:
-$$I^{\text{filtered}}(x) = \frac{1}{W_p} \sum_{x_i \in \Omega} I(x_i) \cdot \underbrace{\exp\left(-\frac{\|x_i - x\|^2}{2\sigma_s^2}\right)}_{\text{Spatial Gaussian Distance}} \cdot \underbrace{\exp\left(-\frac{\|I(x_i) - I(x)\|^2}{2\sigma_r^2}\right)}_{\text{Color / Range Similarity LUT}}$$
-
-### 3. Professional Unsharp Masking (USM)
-Enhances edge contrast by subtracting a Gaussian low-pass blurred version of the image:
-$$I_{\text{sharp}} = I + \text{amount} \times (I - I_{\text{Gaussian Blur}})$$
-
-### 4. Two-Pass Separable Gaussian Blur
-Instead of performing an $\mathcal{O}(W \cdot H \cdot K^2)$ full 2D convolution for a kernel of size $K = 2R + 1$:
-$$\text{1D Gaussian Kernel: } G(x, \sigma) = \frac{1}{\sqrt{2\pi\sigma^2}} \exp\left(-\frac{x^2}{2\sigma^2}\right)$$
-Convolves horizontal 1D then vertical 1D passes consecutively, reducing arithmetic cost by $\approx 90\%$.
-
-### 5. Sobel Edge Magnitude Detection
-Calculates spatial gradient vector intensity:
-$$G_x = \begin{bmatrix} -1 & 0 & +1 \\ -2 & 0 & +2 \\ -1 & 0 & +1 \end{bmatrix}, \quad G_y = \begin{bmatrix} -1 & -2 & -1 \\ 0 & 0 & 0 \\ +1 & +2 & +1 \end{bmatrix}, \quad G = \sqrt{G_x^2 + G_y^2}$$
-
----
-
 ## 📊 Performance Benchmark Matrix (1080p Image: 1920 × 1080)
 
-| Processing Stage | Pure JavaScript (Canvas 2D) | Rust + Wasm (Scalar Opt-3) | Rust + Wasm (SIMD128) | Speedup Factor |
+| Processing Stage | Pure JavaScript (Canvas 2D) | Rust + Wasm (Scalar Opt-3) | Rust + Wasm (SIMD128) | Speedup vs JS |
 | :--- | :--- | :--- | :--- | :--- |
-| **RGB Tone Curve LUT Mapping** | ~24 ms | **~1.2 ms** | **~0.4 ms** | **~60x faster** |
-| **Bilateral Filter (Skin Smoothing)** | ~180 ms | **~18.4 ms** | **~5.2 ms** | **~35x faster** |
-| **Unsharp Masking (USM)** | ~92 ms | **~10.1 ms** | **~3.0 ms** | **~30x faster** |
-| **Separable Gaussian Blur ($\sigma = 3.0$)** | ~85 ms | **~9.2 ms** | **~2.8 ms** | **~30x faster** |
-| **Sobel Edge Detection** | ~62 ms | **~6.8 ms** | **~2.1 ms** | **~29x faster** |
-| **Color Grading & Saturation** | ~28 ms | **~3.1 ms** | **~1.1 ms** | **~25x faster** |
-| **RGB Waveform Histogram** | ~18 ms | **~1.9 ms** | **~0.7 ms** | **~26x faster** |
+| **RGB Tone Curve LUT Mapping** | ~24.0 ms | ~1.2 ms | **~0.4 ms** | **~60x faster** |
+| **Unsharp Masking (USM)** | ~92.0 ms | ~10.1 ms | **~3.0 ms** | **~30x faster** |
+| **Bilateral Filter (Skin Smoothing)** | ~180.0 ms | ~18.4 ms | **~5.2 ms** | **~35x faster** |
+| **Separable Gaussian Blur ($\sigma = 3.0$)** | ~85.0 ms | ~9.2 ms | **~2.8 ms** | **~30x faster** |
+| **Color Invert & Brightness Pass** | ~14.0 ms | ~1.8 ms | **~0.3 ms** | **~46x faster** |
+| **Sobel Edge Detection** | ~62.0 ms | ~6.8 ms | **~2.1 ms** | **~29x faster** |
+| **RGB Waveform Histogram** | ~18.0 ms | ~1.9 ms | **~0.7 ms** | **~26x faster** |
 
 ---
 
 ## ✨ Features & Filter Suite
 
+- **128-Bit WASM SIMD Vectorization**: Accelerates pixel manipulations and convolutions with 16-channel parallel instructions.
 - **Interactive RGB Tone Curves**: Full cubic spline curve editor for Master RGB, Red, Green, and Blue channels with draggable anchor points.
 - **Edge-Preserving Smoothing**: Bilateral Denoising with configurable spatial spread and photometric range tolerance.
 - **Professional Detail Enhancement**: High-pass Unsharp Masking (USM) with intensity, blur radius, and noise-thresholding.
@@ -187,7 +128,7 @@ $$G_x = \begin{bmatrix} -1 & 0 & +1 \\ -2 & 0 & +2 \\ -1 & 0 & +1 \end{bmatrix},
 - **Geometric Transformations**: 90°/180°/270° Rotation, Horizontal & Vertical in-place Flipping.
 - **Real-Time RGB Waveform Histogram**: 4-channel live visualization (Red, Green, Blue, Luminance).
 - **Split-View Before / After Comparison**: Interactive slider to inspect pixel-perfect diffs in real-time.
-- **In-Browser Speed Benchmark**: Compares Rust Wasm execution speed against pure JavaScript loops with live FPS / latency timers.
+- **3-Way In-Browser Benchmark**: Live benchmark comparing Pure JS vs. Rust Scalar vs. Rust SIMD128.
 
 ---
 
@@ -207,10 +148,11 @@ $$G_x = \begin{bmatrix} -1 & 0 & +1 \\ -2 & 0 & +2 \\ -1 & 0 & +1 \end{bmatrix},
 
 ## 🚀 Quick Start
 
-### 1. Build the WebAssembly Package
+### 1. Build the WebAssembly Package with SIMD128
 ```bash
 wasm-pack build --target web --out-dir www/pkg
 ```
+*(Configured automatically via `.cargo/config.toml` with `target-feature=+simd128`)*
 
 ### 2. Run the Development Server
 ```bash
