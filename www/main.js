@@ -1,4 +1,4 @@
-import init, { ImageProcessor, generate_spline_lut } from "./pkg/wasm_image_processor.js";
+import init, { ImageProcessor, generate_spline_lut, is_simd_available } from "./pkg/wasm_image_processor.js";
 
 // Global Application State
 let wasmModule = null;
@@ -42,6 +42,7 @@ const state = {
   unsharpRadius: 1.0,
   bilateralSpatial: 0.0,
   bilateralRange: 30.0,
+  simdEnabled: true,
   sepia: false,
   invert: false,
   grayscale: false,
@@ -53,6 +54,8 @@ const state = {
 const els = {
   wasmExecTime: document.getElementById("wasmExecTime"),
   imageDimensions: document.getElementById("imageDimensions"),
+  simdStatus: document.getElementById("simdStatus"),
+  toggleSimd: document.getElementById("toggleSimd"),
   dropZone: document.getElementById("dropZone"),
   dropHint: document.getElementById("dropHint"),
   imageUpload: document.getElementById("imageUpload"),
@@ -73,7 +76,8 @@ const els = {
   toggleSplitView: document.getElementById("toggleSplitView"),
   splitContainer: document.getElementById("splitContainer"),
   splitDivider: document.getElementById("splitDivider"),
-  benchWasm: document.getElementById("benchWasm"),
+  benchScalar: document.getElementById("benchScalar"),
+  benchSimd: document.getElementById("benchSimd"),
   benchJs: document.getElementById("benchJs"),
   benchSpeedup: document.getElementById("benchSpeedup"),
   // Tone Curve Elements
@@ -112,6 +116,20 @@ async function bootstrap() {
   try {
     wasmModule = await init();
     console.log("🦀 Rust WebAssembly module successfully initialized!");
+
+    const simdActive = typeof is_simd_available === "function" ? is_simd_available() : false;
+    if (simdActive) {
+      els.simdStatus.textContent = "SIMD128 ⚡";
+      els.simdStatus.className = "metric-val status-online";
+      els.toggleSimd.checked = true;
+      state.simdEnabled = true;
+    } else {
+      els.simdStatus.textContent = "Scalar Mode";
+      els.simdStatus.className = "metric-val";
+      els.toggleSimd.checked = false;
+      state.simdEnabled = false;
+    }
+
     updateAllLuts();
     loadSampleProceduralImage();
   } catch (err) {
@@ -130,7 +148,6 @@ function updateChannelLut(channel) {
   if (wasmModule && generate_spline_lut) {
     luts[channel] = generate_spline_lut(new Float32Array(flat));
   } else {
-    // Fallback identity
     for (let i = 0; i < 256; i++) luts[channel][i] = i;
   }
 }
@@ -144,14 +161,12 @@ function renderCurveSvg() {
   const pts = curves[activeChannel];
   const lut = luts[activeChannel];
   
-  // Render Path using calculated LUT
   let d = `M 0 ${256 - lut[0]}`;
   for (let x = 1; x < 256; x += 2) {
     d += ` L ${x} ${256 - lut[x]}`;
   }
   els.curvePath.setAttribute("d", d);
 
-  // Set channel color
   const colors = {
     master: "var(--accent)",
     r: "#f87171",
@@ -160,7 +175,6 @@ function renderCurveSvg() {
   };
   els.curvePath.setAttribute("stroke", colors[activeChannel]);
 
-  // Render draggable points
   els.curvePointsGroup.innerHTML = "";
   pts.forEach((p, idx) => {
     const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
@@ -191,6 +205,7 @@ function setupImage(img) {
   if (wasmModule) {
     processor = new ImageProcessor(canvas.width, canvas.height);
     processor.load_image(imgData.data, canvas.width, canvas.height);
+    processor.set_simd_enabled(state.simdEnabled);
   }
 
   splitCtx.drawImage(img, 0, 0);
@@ -213,6 +228,7 @@ function applyFilters() {
 
   const t0 = performance.now();
 
+  processor.set_simd_enabled(state.simdEnabled);
   processor.apply_pipeline(
     state.brightness,
     state.contrast,
@@ -247,7 +263,6 @@ function applyFilters() {
   const elapsed = (t1 - t0).toFixed(2);
   els.wasmExecTime.textContent = `${elapsed} ms`;
 
-  // Draw Histogram & update Split view
   updateHistogram(processor.get_histogram());
   updateSplitView();
 }
@@ -285,7 +300,7 @@ function updateHistogram(histData) {
   });
 }
 
-// 6. Benchmark: Rust Wasm vs Pure JavaScript Loop
+// 6. 3-Way Benchmark: Pure JS vs Rust Scalar vs Rust SIMD128
 function runBenchmark() {
   if (!processor || !originalImage) return;
 
@@ -293,17 +308,7 @@ function runBenchmark() {
   const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
   const iterations = 5;
 
-  const tWasmStart = performance.now();
-  for (let i = 0; i < iterations; i++) {
-    processor.apply_tone_curves(luts.master, luts.r, luts.g, luts.b);
-    processor.bilateral_filter(2.0, 40.0);
-    processor.unsharp_mask(1.5, 1.2, 2);
-    processor.sobel_edges();
-    processor.reset_to_base();
-  }
-  const wasmTotal = performance.now() - tWasmStart;
-  const wasmAvg = (wasmTotal / iterations).toFixed(2);
-
+  // 1. Pure JavaScript Benchmark (Convolution Loop)
   const jsData = new Uint8ClampedArray(imgData.data);
   const tJsStart = performance.now();
   for (let iter = 0; iter < iterations; iter++) {
@@ -322,12 +327,42 @@ function runBenchmark() {
   const jsTotal = performance.now() - tJsStart;
   const jsAvg = (jsTotal / iterations).toFixed(2);
 
-  const speedup = (jsTotal / wasmTotal).toFixed(1);
+  // 2. Rust Scalar Benchmark (Opt-3, SIMD off)
+  processor.set_simd_enabled(false);
+  const tScalarStart = performance.now();
+  for (let i = 0; i < iterations; i++) {
+    processor.apply_tone_curves(luts.master, luts.r, luts.g, luts.b);
+    processor.unsharp_mask(1.5, 1.2, 2);
+    processor.grayscale();
+    processor.invert();
+    processor.reset_to_base();
+  }
+  const scalarTotal = performance.now() - tScalarStart;
+  const scalarAvg = (scalarTotal / iterations).toFixed(2);
 
-  els.benchWasm.textContent = `${wasmAvg} ms`;
+  // 3. Rust SIMD128 Benchmark (Opt-3 + 128-bit Vector Intrinsics)
+  processor.set_simd_enabled(true);
+  const tSimdStart = performance.now();
+  for (let i = 0; i < iterations; i++) {
+    processor.apply_tone_curves(luts.master, luts.r, luts.g, luts.b);
+    processor.unsharp_mask(1.5, 1.2, 2);
+    processor.grayscale();
+    processor.invert();
+    processor.reset_to_base();
+  }
+  const simdTotal = performance.now() - tSimdStart;
+  const simdAvg = (simdTotal / iterations).toFixed(2);
+
+  // Calculate speedup
+  const speedup = (jsTotal / simdTotal).toFixed(1);
+
   els.benchJs.textContent = `${jsAvg} ms`;
-  els.benchSpeedup.textContent = `${speedup}x Faster`;
+  els.benchScalar.textContent = `${scalarAvg} ms`;
+  els.benchSimd.textContent = `${simdAvg} ms`;
+  els.benchSpeedup.textContent = `${speedup}x vs JS`;
 
+  // Restore user's active SIMD setting
+  processor.set_simd_enabled(state.simdEnabled);
   applyFilters();
 }
 
@@ -360,6 +395,21 @@ function loadSampleProceduralImage() {
 
 // 8. Event Listeners & Interactive Curve Editor
 function setupEventListeners() {
+  // SIMD Hardware Toggle
+  if (els.toggleSimd) {
+    els.toggleSimd.addEventListener("change", (e) => {
+      state.simdEnabled = e.target.checked;
+      if (els.simdStatus) {
+        els.simdStatus.textContent = state.simdEnabled ? "SIMD128 ⚡" : "Scalar Mode";
+        els.simdStatus.className = state.simdEnabled ? "metric-val status-online" : "metric-val";
+      }
+      if (processor) {
+        processor.set_simd_enabled(state.simdEnabled);
+      }
+      requestRender();
+    });
+  }
+
   // SVG Curve Dragging & Manipulation
   let draggedPointIdx = null;
 
@@ -376,7 +426,6 @@ function setupEventListeners() {
     const coords = getSvgCoordinates(e);
     const pts = curves[activeChannel];
 
-    // Check if clicked near an existing point
     let foundIdx = null;
     pts.forEach((p, idx) => {
       const dist = Math.hypot(p.x - coords.x, p.y - coords.y);
@@ -384,7 +433,6 @@ function setupEventListeners() {
     });
 
     if (e.button === 2) {
-      // Right click: Remove point (except boundary 0 and 255)
       if (foundIdx !== null && foundIdx !== 0 && foundIdx !== pts.length - 1) {
         pts.splice(foundIdx, 1);
         updateChannelLut(activeChannel);
@@ -396,7 +444,6 @@ function setupEventListeners() {
     if (foundIdx !== null) {
       draggedPointIdx = foundIdx;
     } else {
-      // Add new anchor point
       pts.push({ x: coords.x, y: coords.y });
       pts.sort((a, b) => a.x - b.x);
       draggedPointIdx = pts.findIndex(p => p.x === coords.x && p.y === coords.y);
@@ -411,9 +458,9 @@ function setupEventListeners() {
     const pts = curves[activeChannel];
 
     if (draggedPointIdx === 0) {
-      pts[0].y = coords.y; // Pin x=0
+      pts[0].y = coords.y;
     } else if (draggedPointIdx === pts.length - 1) {
-      pts[pts.length - 1].y = coords.y; // Pin x=255
+      pts[pts.length - 1].y = coords.y;
     } else {
       const prevX = pts[draggedPointIdx - 1].x + 2;
       const nextX = pts[draggedPointIdx + 1].x - 2;
@@ -707,6 +754,8 @@ function syncControls() {
   els.valBilateralSpatial.textContent = state.bilateralSpatial;
   els.sliderBilateralRange.value = state.bilateralRange;
   els.valBilateralRange.textContent = state.bilateralRange;
+
+  if (els.toggleSimd) els.toggleSimd.checked = state.simdEnabled;
 
   els.btnGrayscale.classList.toggle("active", state.grayscale);
   els.btnSepia.classList.toggle("active", state.sepia);
