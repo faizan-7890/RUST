@@ -2,9 +2,16 @@ mod utils;
 mod filters;
 mod convolutions;
 mod transform;
+pub mod simd;
 
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::Clamped;
+
+/// Checks whether WASM SIMD128 instructions are compiled and active.
+#[wasm_bindgen]
+pub fn is_simd_available() -> bool {
+    simd::is_simd_supported()
+}
 
 /// Generates a 256-entry Lookup Table (LUT) from arbitrary control points
 /// using Fritsch-Carlson Monotone Cubic Spline Interpolation.
@@ -19,6 +26,7 @@ pub struct ImageProcessor {
     height: u32,
     base_pixels: Vec<u8>,
     current_pixels: Vec<u8>,
+    use_simd: bool,
 }
 
 #[wasm_bindgen]
@@ -28,11 +36,13 @@ impl ImageProcessor {
     pub fn new(width: u32, height: u32) -> Self {
         utils::set_panic_hook();
         let size = (width * height * 4) as usize;
+        let simd_active = simd::is_simd_supported();
         Self {
             width,
             height,
             base_pixels: vec![0u8; size],
             current_pixels: vec![0u8; size],
+            use_simd: simd_active,
         }
     }
 
@@ -42,6 +52,16 @@ impl ImageProcessor {
         self.height = height;
         self.base_pixels = data.0;
         self.current_pixels = self.base_pixels.clone();
+    }
+
+    /// Toggles WASM SIMD128 acceleration mode on or off.
+    pub fn set_simd_enabled(&mut self, enabled: bool) {
+        self.use_simd = enabled;
+    }
+
+    /// Returns whether SIMD128 acceleration is currently active.
+    pub fn is_simd_enabled(&self) -> bool {
+        self.use_simd
     }
 
     /// Returns direct pointer to the current pixels buffer for zero-copy JS access.
@@ -99,11 +119,19 @@ impl ImageProcessor {
     // --- Filters ---
 
     pub fn grayscale(&mut self) {
-        filters::apply_grayscale(&mut self.current_pixels);
+        if self.use_simd {
+            simd::simd_apply_grayscale(&mut self.current_pixels);
+        } else {
+            filters::apply_grayscale(&mut self.current_pixels);
+        }
     }
 
     pub fn invert(&mut self) {
-        filters::apply_invert(&mut self.current_pixels);
+        if self.use_simd {
+            simd::simd_apply_invert(&mut self.current_pixels);
+        } else {
+            filters::apply_invert(&mut self.current_pixels);
+        }
     }
 
     pub fn sepia(&mut self) {
@@ -111,7 +139,11 @@ impl ImageProcessor {
     }
 
     pub fn brightness(&mut self, value: f32) {
-        filters::apply_brightness(&mut self.current_pixels, value);
+        if self.use_simd {
+            simd::simd_apply_brightness(&mut self.current_pixels, value);
+        } else {
+            filters::apply_brightness(&mut self.current_pixels, value);
+        }
     }
 
     pub fn contrast(&mut self, contrast: f32) {
@@ -159,7 +191,13 @@ impl ImageProcessor {
     }
 
     pub fn unsharp_mask(&mut self, sigma: f32, amount: f32, threshold: u8) {
-        convolutions::apply_unsharp_mask(&mut self.current_pixels, self.width, self.height, sigma, amount, threshold);
+        if self.use_simd {
+            let mut blurred = self.current_pixels.clone();
+            convolutions::apply_gaussian_blur(&mut blurred, self.width, self.height, sigma);
+            simd::simd_unsharp_mask(&mut self.current_pixels, &blurred, amount, threshold);
+        } else {
+            convolutions::apply_unsharp_mask(&mut self.current_pixels, self.width, self.height, sigma, amount, threshold);
+        }
     }
 
     pub fn bilateral_filter(&mut self, spatial_sigma: f32, range_sigma: f32) {
@@ -220,7 +258,7 @@ impl ImageProcessor {
     }
 
     /// Unified high-speed filter pipeline: resets to base image and applies
-    /// interactive parameters and tone curve LUTs in a single pass.
+    /// interactive parameters, tone curve LUTs, and optional SIMD acceleration.
     pub fn apply_pipeline(
         &mut self,
         brightness: f32,
@@ -250,9 +288,13 @@ impl ImageProcessor {
             filters::apply_tone_curves(&mut self.current_pixels, master_lut, r_lut, g_lut, b_lut);
         }
 
-        // 2. Pointwise Tone & Color Adjustments
+        // 2. Pointwise Tone & Color Adjustments (SIMD-accelerated when active)
         if (brightness).abs() > 0.1 {
-            filters::apply_brightness(&mut self.current_pixels, brightness);
+            if self.use_simd {
+                simd::simd_apply_brightness(&mut self.current_pixels, brightness);
+            } else {
+                filters::apply_brightness(&mut self.current_pixels, brightness);
+            }
         }
         if (contrast).abs() > 0.1 {
             filters::apply_contrast(&mut self.current_pixels, contrast);
@@ -270,10 +312,18 @@ impl ImageProcessor {
             filters::apply_sepia(&mut self.current_pixels);
         }
         if invert_active {
-            filters::apply_invert(&mut self.current_pixels);
+            if self.use_simd {
+                simd::simd_apply_invert(&mut self.current_pixels);
+            } else {
+                filters::apply_invert(&mut self.current_pixels);
+            }
         }
         if grayscale_active {
-            filters::apply_grayscale(&mut self.current_pixels);
+            if self.use_simd {
+                simd::simd_apply_grayscale(&mut self.current_pixels);
+            } else {
+                filters::apply_grayscale(&mut self.current_pixels);
+            }
         }
         if vignette_intensity > 0.01 {
             filters::apply_vignette(&mut self.current_pixels, self.width, self.height, 1.2, vignette_intensity);
@@ -292,7 +342,13 @@ impl ImageProcessor {
             self.current_pixels = temp;
         }
         if unsharp_amount > 0.05 && unsharp_radius > 0.1 {
-            convolutions::apply_unsharp_mask(&mut self.current_pixels, self.width, self.height, unsharp_radius, unsharp_amount, 2);
+            if self.use_simd {
+                let mut blurred = self.current_pixels.clone();
+                convolutions::apply_gaussian_blur(&mut blurred, self.width, self.height, unsharp_radius);
+                simd::simd_unsharp_mask(&mut self.current_pixels, &blurred, unsharp_amount, 2);
+            } else {
+                convolutions::apply_unsharp_mask(&mut self.current_pixels, self.width, self.height, unsharp_radius, unsharp_amount, 2);
+            }
         }
     }
 }
