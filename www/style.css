@@ -288,7 +288,7 @@ body {
 /* Bottom Stats Panel */
 .bottom-stats-grid {
   display: grid;
-  grid-template-columns: 1fr 1.2fr;
+  grid-template-columns: 1fr 1.35fr;
   gap: 12px;
   height: 110px;
 }
@@ -331,19 +331,23 @@ body {
 }
 
 .bench-label {
-  font-size: 11px;
+  font-size: 10px;
   color: var(--text-muted);
 }
 
 .bench-value {
   font-family: 'Fira Code', monospace;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 700;
 }
 
+.bench-value.text-rose { color: #f43f5e; }
+.bench-value.text-orange { color: #f97316; }
+.bench-value.text-emerald { color: #10b981; }
+
 .bench-value.speedup {
   color: var(--success);
-  font-size: 16px;
+  font-size: 15px;
 }
 
 /* Sidebar Controls */
@@ -574,4 +578,20 @@ input[type="range"]::-webkit-slider-thumb {
   align-items: center;
   gap: 8px;
   cursor: pointer;
+}
+
+.highlight-checkbox {
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  transition: all 0.15s ease;
+}
+
+.highlight-checkbox:hover {
+  border-color: var(--accent);
+  background: #242938;
 }
