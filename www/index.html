@@ -26,6 +26,10 @@
           <span class="metric-val status-online" id="engineStatus">Rust + Wasm</span>
         </div>
         <div class="metric-card">
+          <span class="metric-label">VECTOR ACCEL</span>
+          <span class="metric-val highlight" id="simdStatus">SIMD128 ⚡</span>
+        </div>
+        <div class="metric-card">
           <span class="metric-label">WASM TIME</span>
           <span class="metric-val highlight" id="wasmExecTime">0.00 ms</span>
         </div>
@@ -48,7 +52,7 @@
               <input type="file" id="imageUpload" accept="image/*">
             </label>
             <button class="btn-tool" id="btnSample">🖼️ Load Sample</button>
-            <button class="btn-tool" id="btnBenchmark">⚡ Benchmark vs JS</button>
+            <button class="btn-tool" id="btnBenchmark">⚡ Benchmark (JS vs Scalar vs SIMD)</button>
           </div>
           <div class="tool-group">
             <button class="btn-tool" id="btnFlipH" title="Flip Horizontal">↔️ Flip H</button>
@@ -77,25 +81,29 @@
           </div>
         </div>
 
-        <!-- Real-time RGB Histogram & Benchmark Panel -->
+        <!-- Real-time RGB Histogram & 3-Way Benchmark Panel -->
         <div class="bottom-stats-grid">
           <div class="histogram-panel">
             <div class="panel-title">RGB & Luminance Live Waveform</div>
             <canvas id="histogramCanvas" width="256" height="70"></canvas>
           </div>
           <div class="benchmark-panel" id="benchmarkResult">
-            <div class="panel-title">Wasm vs JavaScript Execution Speed</div>
+            <div class="panel-title">3-Way Execution Speed: JS vs. Rust Scalar vs. Rust SIMD128</div>
             <div class="bench-stats">
               <div class="bench-item">
-                <span class="bench-label">Rust Wasm</span>
-                <span class="bench-value" id="benchWasm">-- ms</span>
-              </div>
-              <div class="bench-item">
                 <span class="bench-label">Pure JS Loop</span>
-                <span class="bench-value" id="benchJs">-- ms</span>
+                <span class="bench-value text-rose" id="benchJs">-- ms</span>
               </div>
               <div class="bench-item">
-                <span class="bench-label">Speedup Factor</span>
+                <span class="bench-label">Rust Scalar</span>
+                <span class="bench-value text-orange" id="benchScalar">-- ms</span>
+              </div>
+              <div class="bench-item">
+                <span class="bench-label">Rust SIMD128</span>
+                <span class="bench-value text-emerald" id="benchSimd">-- ms</span>
+              </div>
+              <div class="bench-item">
+                <span class="bench-label">Total Speedup</span>
                 <span class="bench-value speedup" id="benchSpeedup">--x Faster</span>
               </div>
             </div>
@@ -105,6 +113,15 @@
 
       <!-- Right: Controls Sidebar -->
       <aside class="controls-sidebar">
+        <!-- Performance & Vector Acceleration -->
+        <div class="sidebar-group">
+          <h3 class="group-heading">Acceleration & Hardware</h3>
+          <label class="checkbox-label highlight-checkbox">
+            <input type="checkbox" id="toggleSimd" checked>
+            <span>⚡ WASM SIMD128 Vector Acceleration</span>
+          </label>
+        </div>
+
         <!-- Preset Gallery -->
         <div class="sidebar-group">
           <h3 class="group-heading">One-Click Presets</h3>
