@@ -3,23 +3,29 @@
 [![Rust](https://img.shields.io/badge/Rust-1.75+-orange.svg?logo=rust)](https://www.rust-lang.org/)
 [![WebAssembly](https://img.shields.io/badge/WebAssembly-Wasm-654FF0.svg?logo=webassembly)](https://webassembly.org/)
 [![SIMD128](https://img.shields.io/badge/WASM_SIMD-128--Bit-brightgreen.svg)](https://github.com/WebAssembly/simd)
+[![Web Worker](https://img.shields.io/badge/Web_Worker-OffscreenCanvas-blueviolet.svg)](https://developer.mozilla.org/en-US/docs/Web/API/OffscreenCanvas)
 [![Vite](https://img.shields.io/badge/Vite-5.0+-646CFF.svg?logo=vite)](https://vitejs.dev/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-A high-performance, real-time image filtering, interactive tone curve editing, edge-preserving denoising, and spatial convolution engine written in **Rust**, compiled to **WebAssembly with 128-bit SIMD vector acceleration**, and executed directly in the browser with **zero-copy memory sharing** via HTML5 Canvas.
+A high-performance, real-time image filtering, interactive tone curve editing, edge-preserving denoising, and spatial convolution engine written in **Rust**, compiled to **WebAssembly with 128-bit SIMD vector acceleration**, and executed directly in the browser via a **dedicated Web Worker & OffscreenCanvas background pipeline** with zero-copy memory sharing.
 
 ---
 
 ## 🏛️ System Architecture
 
-The architecture completely decouples the **HTML5 presentation and event loop** from the **compute-intensive mathematical kernel engine**, passing pixel buffers with zero copy across WebAssembly linear memory.
+The architecture completely decouples the **HTML5 presentation and event loop** from the **compute-intensive mathematical kernel engine**, running Wasm on a background worker thread:
 
 ```mermaid
 graph TB
-    subgraph Browser_Layer["🌐 Presentation & UI Layer (Main Thread)"]
+    subgraph Main_Thread["🌐 Presentation & UI Layer (Main Thread)"]
         UI["🖥️ HTML5 Canvas UI\n(Tone Curve SVG, Sliders, Split View, Drag & Drop)"]
-        Controller["⚙️ Controller (main.js)\n(State Machine & rAF Render Loop)"]
+        Controller["⚙️ Controller (main.js)\n(State Machine, Event Dispatcher & UI FPS Monitor)"]
         HistCanvas["📊 Waveform Display\n(Live 4-Channel Histogram)"]
+    end
+
+    subgraph Worker_Thread["🧵 Background Worker Thread (worker.js)"]
+        WorkerRouter["📬 Message Router & Dispatcher\n(INIT, LOAD, RENDER, BENCHMARK)"]
+        Offscreen["🎨 OffscreenCanvas Context\n(Zero-latency Direct Background Blit)"]
     end
 
     subgraph Memory_Layer["🧠 WebAssembly Linear Memory (Shared Heap)"]
@@ -38,11 +44,13 @@ graph TB
     end
 
     UI -->|User Input / Gestures| Controller
-    Controller -->|1. Load Image Bytes| Processor
+    Controller -->|postMessage: LOAD_IMAGE| WorkerRouter
+    Controller -->|postMessage: RENDER(state, curves)| WorkerRouter
+    
+    WorkerRouter --> Processor
     Processor -->|Store Baseline| BaseBuf
-    Controller -->|2. Generate Spline LUTs| SplineEngine
+    WorkerRouter -->|generate_spline_lut| SplineEngine
     SplineEngine --> LUT
-    Controller -->|3. apply_pipeline(params, luts, simd)| Processor
     
     Processor --> SIMDEngine
     SIMDEngine --> Filters
@@ -50,10 +58,22 @@ graph TB
     Processor --> Transforms
     
     Filters & Convolutions & Transforms -->|Direct In-Place Mutation| CurrBuf
-    CurrBuf -.->|Zero-Copy Uint8ClampedArray View| Controller
-    Controller -->|putImageData()| UI
-    Processor -->|get_histogram()| HistCanvas
+    CurrBuf -.->|Zero-Copy Uint8ClampedArray View| Offscreen
+    Offscreen -.->|Render Output| UI
+    WorkerRouter -->|postMessage: RENDER_COMPLETE| Controller
+    Controller -->|updateHistogram()| HistCanvas
 ```
+
+---
+
+## 🧵 Dedicated Web Worker & OffscreenCanvas Pipeline
+
+To ensure the UI thread stays locked at **60 FPS** without micro-stutters during heavy spatial convolutions or bilateral skin smoothing:
+
+* **Complete Thread Isolation**: All mathematical operations and Wasm allocations execute on a dedicated Web Worker thread.
+* **OffscreenCanvas Blitting**: If supported by the browser, the Canvas is transferred to the worker via `canvas.transferControlToOffscreen()`, allowing the worker to paint directly to the display without round-trip main thread messaging.
+* **Transferable ArrayBuffer Fallback**: For environments without OffscreenCanvas, raw pixel bytes are transferred using zero-copy Transferable Objects (`postMessage(..., [buffer])`).
+* **Live UI FPS Monitor**: Tracks main thread frame delta times to prove zero frame-drops during active slider manipulation.
 
 ---
 
@@ -65,41 +85,6 @@ The engine leverages WebAssembly 128-bit SIMD (`core::arch::wasm32::*`) to proce
 * **Vectorized Invert**: Executes 128-bit bitwise XOR `v128_xor` with an RGB inversion mask, preserving the alpha channel.
 * **Vectorized Grayscale**: Unpacks `u8x16` into signed 16-bit integers (`i16x8`) and calculates ITU-R BT.601 luminance via integer vector multiply-accumulate: `(77*R + 150*G + 29*B) >> 8`.
 * **Vectorized Unsharp Masking**: Executes 16-bit vector difference (`orig - blur`), scales high frequencies, and adds back with saturation.
-
----
-
-## ⚡ Zero-Copy Shared Memory Model
-
-Traditional WebAssembly approaches serialize data or copy buffers repeatedly over the JavaScript-Wasm boundary via JSON or repeated array copies. This engine implements **Direct Heap Slicing**:
-
-> **Tip:** By reading pointer offsets directly from `wasm.memory.buffer`, the browser instantiates a `Uint8ClampedArray` referencing existing memory in **$\mathcal{O}(1)$ time with 0 KB memory duplication**.
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant UI as Browser Canvas / User
-    participant JS as JavaScript Controller (main.js)
-    participant WasmMem as WebAssembly Linear Memory
-    participant Rust as Rust Engine (ImageProcessor + SIMD)
-
-    UI->>JS: User uploads or drags image file
-    JS->>JS: Extract raw ImageData (Uint8ClampedArray)
-    JS->>Rust: ImageProcessor::new(width, height)
-    Rust->>WasmMem: Allocate base_pixels & current_pixels
-    JS->>Rust: load_image(data, width, height)
-    Note over JS,Rust: Source pixels cached permanently in Wasm heap
-
-    loop On Curve Drag / Slider Change / Animation Frame
-        JS->>Rust: generate_spline_lut(curvePoints) -> 256-LUT
-        JS->>Rust: apply_pipeline(brightness, blur, bilateral, unsharp, luts, simd)
-        Rust->>WasmMem: Reset to base & execute 128-bit SIMD kernels in-place
-        Rust-->>JS: Return pixel_ptr() and pixel_len()
-        JS->>WasmMem: new Uint8ClampedArray(wasm.memory.buffer, ptr, len)
-        Note over JS,WasmMem: ZERO-COPY: Direct window into Wasm linear memory!
-        JS->>UI: ctx.putImageData(clampedArray, 0, 0)
-        JS->>UI: Render 4-Channel Histogram Waveform
-    end
-```
 
 ---
 
@@ -119,6 +104,7 @@ sequenceDiagram
 
 ## ✨ Features & Filter Suite
 
+- **Dedicated Web Worker & OffscreenCanvas**: Guarantees locked 60 FPS main thread responsiveness.
 - **128-Bit WASM SIMD Vectorization**: Accelerates pixel manipulations and convolutions with 16-channel parallel instructions.
 - **Interactive RGB Tone Curves**: Full cubic spline curve editor for Master RGB, Red, Green, and Blue channels with draggable anchor points.
 - **Edge-Preserving Smoothing**: Bilateral Denoising with configurable spatial spread and photometric range tolerance.
@@ -157,8 +143,7 @@ wasm-pack build --target web --out-dir www/pkg
 ### 2. Run the Development Server
 ```bash
 cd www
-npm install
-npm run dev
+bun run dev
 ```
 
 Open your browser at `http://localhost:3000`.
