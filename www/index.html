@@ -22,8 +22,12 @@
       </div>
       <div class="header-metrics">
         <div class="metric-card">
-          <span class="metric-label">ENGINE</span>
-          <span class="metric-val status-online" id="engineStatus">Rust + Wasm</span>
+          <span class="metric-label">PIPELINE</span>
+          <span class="metric-val status-online" id="threadStatus">Worker 🧵</span>
+        </div>
+        <div class="metric-card">
+          <span class="metric-label">UI RESPONSIVENESS</span>
+          <span class="metric-val fps-high" id="uiFps">60 FPS</span>
         </div>
         <div class="metric-card">
           <span class="metric-label">VECTOR ACCEL</span>
@@ -113,13 +117,19 @@
 
       <!-- Right: Controls Sidebar -->
       <aside class="controls-sidebar">
-        <!-- Performance & Vector Acceleration -->
+        <!-- Performance & Multi-Threading -->
         <div class="sidebar-group">
-          <h3 class="group-heading">Acceleration & Hardware</h3>
-          <label class="checkbox-label highlight-checkbox">
-            <input type="checkbox" id="toggleSimd" checked>
-            <span>⚡ WASM SIMD128 Vector Acceleration</span>
-          </label>
+          <h3 class="group-heading">Hardware & Threading</h3>
+          <div class="flex-column gap-2">
+            <label class="checkbox-label highlight-checkbox">
+              <input type="checkbox" id="toggleWorker" checked>
+              <span>🧵 Background Web Worker (OffscreenCanvas)</span>
+            </label>
+            <label class="checkbox-label highlight-checkbox">
+              <input type="checkbox" id="toggleSimd" checked>
+              <span>⚡ WASM SIMD128 Vector Acceleration</span>
+            </label>
+          </div>
         </div>
 
         <!-- Preset Gallery -->
