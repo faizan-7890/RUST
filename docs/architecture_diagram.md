@@ -2,20 +2,25 @@
 ## Interactive Architecture Specification & System Design
 
 > [!NOTE]
-> This artifact details the end-to-end architecture, zero-copy memory lifecycle, 128-bit WASM SIMD vector acceleration, interactive monotone cubic spline tone curves, spatial convolution pipelines, edge-preserving bilateral denoising, and unsharp masking for the **Rust + WebAssembly In-Browser Image Processing Engine**.
+> This artifact details the end-to-end architecture, dedicated Web Worker and OffscreenCanvas pipeline, zero-copy memory lifecycle, 128-bit WASM SIMD vector acceleration, interactive monotone cubic spline tone curves, spatial convolution pipelines, edge-preserving bilateral denoising, and unsharp masking for the **Rust + WebAssembly In-Browser Image Processing Engine**.
 
 ---
 
-## 1. High-Level System Architecture
+## 1. High-Level System Architecture (Multi-Threaded Model)
 
-The system decouples the **Browser UI presentation layer** from the **compute-intensive mathematical kernel engine**, communicating across WebAssembly boundaries via a shared memory buffer.
+The system decouples the **Browser UI presentation layer** from the **compute-intensive mathematical kernel engine**, running WebAssembly within a dedicated background worker thread:
 
 ```mermaid
 graph TB
-    subgraph Browser_Layer["🌐 Presentation & UI Layer (Main Thread)"]
+    subgraph Main_Thread["🌐 Presentation & UI Layer (Main Thread)"]
         UI["🖥️ HTML5 Canvas UI\n(Tone Curve SVG, Sliders, Split View, Drag & Drop)"]
-        Controller["⚙️ Controller (main.js)\n(State Machine & rAF Render Loop)"]
+        Controller["⚙️ Controller (main.js)\n(State Machine, Event Dispatcher & UI FPS Monitor)"]
         HistCanvas["📊 Waveform Display\n(Live 4-Channel Histogram)"]
+    end
+
+    subgraph Worker_Thread["🧵 Background Worker Thread (worker.js)"]
+        WorkerRouter["📬 Message Router & Dispatcher\n(INIT, LOAD, RENDER, BENCHMARK)"]
+        Offscreen["🎨 OffscreenCanvas Context\n(Zero-latency Direct Background Blit)"]
     end
 
     subgraph Memory_Layer["🧠 WebAssembly Linear Memory (Shared Heap)"]
@@ -34,11 +39,13 @@ graph TB
     end
 
     UI -->|User Input / Gestures| Controller
-    Controller -->|1. Load Image Bytes| Processor
+    Controller -->|postMessage: LOAD_IMAGE| WorkerRouter
+    Controller -->|postMessage: RENDER(state, curves)| WorkerRouter
+    
+    WorkerRouter --> Processor
     Processor -->|Store Baseline| BaseBuf
-    Controller -->|2. Generate Spline LUTs| SplineEngine
+    WorkerRouter -->|generate_spline_lut| SplineEngine
     SplineEngine --> LUT
-    Controller -->|3. apply_pipeline(params, luts, simd)| Processor
     
     Processor --> SIMDEngine
     SIMDEngine --> Filters
@@ -46,14 +53,48 @@ graph TB
     Processor --> Transforms
     
     Filters & Convolutions & Transforms -->|Direct In-Place Mutation| CurrBuf
-    CurrBuf -.->|Zero-Copy Uint8ClampedArray View| Controller
-    Controller -->|putImageData()| UI
-    Processor -->|get_histogram()| HistCanvas
+    CurrBuf -.->|Zero-Copy Uint8ClampedArray View| Offscreen
+    Offscreen -.->|Render Output| UI
+    WorkerRouter -->|postMessage: RENDER_COMPLETE| Controller
+    Controller -->|updateHistogram()| HistCanvas
 ```
 
 ---
 
-## 2. WASM SIMD128 Vector Pipeline
+## 2. Web Worker & OffscreenCanvas Threading Lifecycle
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant UI as Browser UI / Sliders (Main Thread)
+    participant Main as Controller (main.js)
+    participant Worker as Web Worker (worker.js)
+    participant Wasm as Rust WebAssembly Engine
+
+    UI->>Main: User uploads image or adjusts curve/slider
+    Main->>Main: update UI instantly (60 FPS locked loop)
+    Main->>Worker: postMessage({ type: 'RENDER', payload: { state, curves } })
+    
+    Note over Worker,Wasm: Background thread computation (non-blocking)
+    Worker->>Wasm: generate_spline_lut(curves)
+    Worker->>Wasm: processor.apply_pipeline(simd, bilateral, usm, luts...)
+    Wasm-->>Worker: Pointer to processed pixels in linear memory
+    
+    alt OffscreenCanvas Transferred
+        Worker->>Worker: offscreenCtx.putImageData(wasmMemory, 0, 0)
+        Note over Worker: Direct display update from background thread!
+        Worker->>Main: postMessage({ type: 'RENDER_COMPLETE', duration, histogram })
+    else Transferable ArrayBuffer Fallback
+        Worker->>Main: postMessage({ type: 'RENDER_COMPLETE', pixels: buffer }, [buffer])
+        Main->>UI: ctx.putImageData(pixels, 0, 0)
+    end
+    
+    Main->>UI: Render Histogram & update latency badges
+```
+
+---
+
+## 3. WASM SIMD128 Vector Pipeline
 
 ```mermaid
 flowchart TD
@@ -78,88 +119,7 @@ flowchart TD
 
 ---
 
-## 3. Zero-Copy Shared Memory Model
-
-Traditional WebAssembly integration often copies heavy pixel arrays back and forth via `postMessage` or JSON serialization. This engine implements **Direct Heap Slicing**:
-
-> [!TIP]
-> By reading pointer offsets directly from `wasm.memory.buffer`, the browser instantiates a `Uint8ClampedArray` referencing existing memory in **$\mathcal{O}(1)$ time with 0 KB memory duplication**.
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant UI as Browser Canvas / User
-    participant JS as JavaScript Controller (main.js)
-    participant WasmMem as WebAssembly Linear Memory
-    participant Rust as Rust Engine (ImageProcessor + SIMD)
-
-    UI->>JS: User uploads or drags image file
-    JS->>JS: Extract raw ImageData (Uint8ClampedArray)
-    JS->>Rust: ImageProcessor::new(width, height)
-    Rust->>WasmMem: Allocate base_pixels & current_pixels
-    JS->>Rust: load_image(data, width, height)
-    Note over JS,Rust: Source pixels cached permanently in Wasm heap
-
-    loop On Curve Drag / Slider Change / Animation Frame
-        JS->>Rust: generate_spline_lut(points) -> [u8; 256]
-        JS->>Rust: apply_pipeline(brightness, blur, bilateral, unsharp, luts, simd)
-        Rust->>WasmMem: Reset to base & execute 128-bit SIMD kernels in-place
-        Rust-->>JS: Return pixel_ptr() and pixel_len()
-        JS->>WasmMem: new Uint8ClampedArray(wasm.memory.buffer, ptr, len)
-        Note over JS,WasmMem: ZERO-COPY: Direct window into Wasm linear memory!
-        JS->>UI: ctx.putImageData(clampedArray, 0, 0)
-        JS->>UI: Render 4-Channel Histogram Waveform
-    end
-```
-
----
-
-## 4. Multi-Stage Filter & Kernel Pipeline
-
-Each rendering pass executes a unified pipeline, preventing rounding degradation and cumulative artifacts:
-
-```mermaid
-flowchart LR
-    subgraph Input_Stage["1. Input Baseline"]
-        A[Base RGBA Buffer]
-    end
-
-    subgraph Tone_Curve_Stage["2. Cubic Spline Tone Curves"]
-        B[Fritsch-Carlson Spline LUT Mapping: Master + R + G + B]
-    end
-
-    subgraph Color_Stage["3. Pointwise Color Transformations (SIMD)"]
-        C[Brightness & Contrast] --> D[Saturation & Hue Rotation]
-        D --> E[LUT Gamma Correction]
-        E --> F[Tone Filters: Sepia / Invert / Grayscale]
-        F --> G[Vignette Gradient Mask]
-    end
-
-    subgraph Edge_Preserving_Stage["4. Edge-Preserving Denoising"]
-        H[Bilateral Filter: Spatial + Range Gaussian LUT]
-    end
-
-    subgraph Spatial_Stage["5. Spatial Convolutions & USM (SIMD)"]
-        I[Separable Gaussian Blur] --> J[Unsharp Masking: USM High-Pass]
-        J --> K[3x3 Sharpen / Sobel Gradient Magnitude]
-    end
-
-    subgraph Output_Stage["6. Display & Waveform"]
-        L[Processed Output Buffer]
-        M[Live RGB + Luma Histogram]
-    end
-
-    A --> Tone_Curve_Stage
-    Tone_Curve_Stage --> Color_Stage
-    Color_Stage --> Edge_Preserving_Stage
-    Edge_Preserving_Stage --> Spatial_Stage
-    Spatial_Stage --> Output_Stage
-    Spatial_Stage -.-> M
-```
-
----
-
-## 5. Performance Benchmark Matrix (1080p Image: 1920 × 1080)
+## 4. Performance Benchmark Matrix (1080p Image: 1920 × 1080)
 
 | Processing Stage | Pure JavaScript (Canvas 2D) | Rust + Wasm (Scalar Opt-3) | Rust + Wasm (SIMD128) | Speedup vs JS |
 | :--- | :--- | :--- | :--- | :--- |
