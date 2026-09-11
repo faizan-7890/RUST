@@ -2,11 +2,15 @@ import init, { ImageProcessor, generate_spline_lut, is_simd_available } from "./
 
 // Global Application State
 let wasmModule = null;
-let processor = null;
+let mainThreadProcessor = null;
+let worker = null;
+let workerReady = false;
+let offscreenTransferred = false;
 let originalImage = null;
+let originalRawData = null;
+
 let canvas = document.getElementById("mainCanvas");
 let ctx = canvas.getContext("2d", { willReadFrequently: true });
-
 let splitCanvas = document.getElementById("splitCanvas");
 let splitCtx = splitCanvas.getContext("2d");
 let histCanvas = document.getElementById("histogramCanvas");
@@ -43,6 +47,7 @@ const state = {
   bilateralSpatial: 0.0,
   bilateralRange: 30.0,
   simdEnabled: true,
+  workerEnabled: true,
   sepia: false,
   invert: false,
   grayscale: false,
@@ -52,9 +57,12 @@ const state = {
 
 // UI Elements
 const els = {
+  threadStatus: document.getElementById("threadStatus"),
+  uiFps: document.getElementById("uiFps"),
   wasmExecTime: document.getElementById("wasmExecTime"),
   imageDimensions: document.getElementById("imageDimensions"),
   simdStatus: document.getElementById("simdStatus"),
+  toggleWorker: document.getElementById("toggleWorker"),
   toggleSimd: document.getElementById("toggleSimd"),
   dropZone: document.getElementById("dropZone"),
   dropHint: document.getElementById("dropHint"),
@@ -84,7 +92,7 @@ const els = {
   curveSvg: document.getElementById("curveSvg"),
   curvePath: document.getElementById("curvePath"),
   curvePointsGroup: document.getElementById("curvePoints"),
-  // Sliders & Value Displays
+  // Sliders
   sliderBrightness: document.getElementById("sliderBrightness"),
   valBrightness: document.getElementById("valBrightness"),
   sliderContrast: document.getElementById("sliderContrast"),
@@ -111,35 +119,106 @@ const els = {
   valBilateralRange: document.getElementById("valBilateralRange"),
 };
 
-// 1. Initialize WebAssembly Module
+// 1. Live UI FPS Meter
+let frameCount = 0;
+let lastFpsUpdate = performance.now();
+function updateFpsLoop() {
+  frameCount++;
+  const now = performance.now();
+  if (now - lastFpsUpdate >= 500) {
+    const fps = Math.round((frameCount * 1000) / (now - lastFpsUpdate));
+    frameCount = 0;
+    lastFpsUpdate = now;
+    if (els.uiFps) {
+      els.uiFps.textContent = `${fps} FPS`;
+      els.uiFps.className = `metric-val ${fps >= 55 ? "fps-high" : fps >= 30 ? "fps-med" : "fps-low"}`;
+    }
+  }
+  requestAnimationFrame(updateFpsLoop);
+}
+requestAnimationFrame(updateFpsLoop);
+
+// 2. Initialize Web Worker & Main Thread Engine
 async function bootstrap() {
   try {
     wasmModule = await init();
-    console.log("🦀 Rust WebAssembly module successfully initialized!");
-
     const simdActive = typeof is_simd_available === "function" ? is_simd_available() : false;
-    if (simdActive) {
-      els.simdStatus.textContent = "SIMD128 ⚡";
-      els.simdStatus.className = "metric-val status-online";
-      els.toggleSimd.checked = true;
-      state.simdEnabled = true;
-    } else {
-      els.simdStatus.textContent = "Scalar Mode";
-      els.simdStatus.className = "metric-val";
-      els.toggleSimd.checked = false;
-      state.simdEnabled = false;
+    state.simdEnabled = simdActive;
+
+    if (els.simdStatus) {
+      els.simdStatus.textContent = simdActive ? "SIMD128 ⚡" : "Scalar Mode";
+      els.simdStatus.className = simdActive ? "metric-val status-online" : "metric-val";
+      els.toggleSimd.checked = simdActive;
     }
 
+    // Initialize Web Worker
+    initWorker();
     updateAllLuts();
     loadSampleProceduralImage();
   } catch (err) {
-    console.warn("Wasm init failed, waiting for wasm-pack build:", err);
-    document.getElementById("engineStatus").textContent = "Build Pending";
-    document.getElementById("engineStatus").className = "metric-val";
+    console.warn("Bootstrap error:", err);
   }
 }
 
-// 2. Tone Curve Spline & LUT Generation
+function initWorker() {
+  try {
+    worker = new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
+
+    worker.onmessage = (e) => {
+      const { type, duration, histogram, pixels, width, height, jsAvg, scalarAvg, simdAvg, speedup } = e.data;
+
+      if (type === "INIT_SUCCESS") {
+        workerReady = true;
+        updateThreadStatus();
+      } else if (type === "IMAGE_LOADED") {
+        if (histogram) updateHistogram(histogram);
+      } else if (type === "RENDER_COMPLETE") {
+        if (duration && els.wasmExecTime) {
+          els.wasmExecTime.textContent = `${duration} ms`;
+        }
+        if (histogram) updateHistogram(histogram);
+        if (pixels && !offscreenTransferred) {
+          const imgData = new ImageData(new Uint8ClampedArray(pixels), width, height);
+          ctx.putImageData(imgData, 0, 0);
+        }
+        updateSplitView();
+      } else if (type === "TRANSFORM_COMPLETE") {
+        canvas.width = width;
+        canvas.height = height;
+        splitCanvas.width = width;
+        splitCanvas.height = height;
+        els.imageDimensions.textContent = `${width} × ${height}`;
+        requestRender();
+      } else if (type === "BENCHMARK_COMPLETE") {
+        els.benchJs.textContent = `${jsAvg} ms`;
+        els.benchScalar.textContent = `${scalarAvg} ms`;
+        els.benchSimd.textContent = `${simdAvg} ms`;
+        els.benchSpeedup.textContent = `${speedup}x vs JS`;
+        requestRender();
+      }
+    };
+
+    worker.postMessage({ type: "INIT_WASM" });
+  } catch (err) {
+    console.warn("Web Worker initialization failed, falling back to Main Thread:", err);
+    state.workerEnabled = false;
+    updateThreadStatus();
+  }
+}
+
+function updateThreadStatus() {
+  if (els.threadStatus) {
+    if (state.workerEnabled && workerReady) {
+      els.threadStatus.textContent = offscreenTransferred ? "Offscreen ⚡" : "Worker 🧵";
+      els.threadStatus.className = "metric-val status-online";
+    } else {
+      els.threadStatus.textContent = "Main Thread";
+      els.threadStatus.className = "metric-val";
+    }
+  }
+}
+
+// 3. Tone Curve Spline & LUT Generation
 function updateChannelLut(channel) {
   const pts = curves[channel];
   const flat = [];
@@ -187,32 +266,47 @@ function renderCurveSvg() {
   });
 }
 
-// 3. Image Loading and Processor Setup
+// 4. Image Loading and Processor Setup
 function setupImage(img) {
   originalImage = img;
   els.dropHint.style.display = "none";
 
-  canvas.width = img.naturalWidth || img.width;
-  canvas.height = img.naturalHeight || img.height;
-  splitCanvas.width = canvas.width;
-  splitCanvas.height = canvas.height;
+  const w = img.naturalWidth || img.width;
+  const h = img.naturalHeight || img.height;
 
-  els.imageDimensions.textContent = `${canvas.width} × ${canvas.height}`;
+  canvas.width = w;
+  canvas.height = h;
+  splitCanvas.width = w;
+  splitCanvas.height = h;
+
+  els.imageDimensions.textContent = `${w} × ${h}`;
 
   ctx.drawImage(img, 0, 0);
-  const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const imgData = ctx.getImageData(0, 0, w, h);
+  originalRawData = new Uint8ClampedArray(imgData.data);
 
-  if (wasmModule) {
-    processor = new ImageProcessor(canvas.width, canvas.height);
-    processor.load_image(imgData.data, canvas.width, canvas.height);
-    processor.set_simd_enabled(state.simdEnabled);
+  // Main Thread Processor Fallback
+  mainThreadProcessor = new ImageProcessor(w, h);
+  mainThreadProcessor.load_image(originalRawData, w, h);
+  mainThreadProcessor.set_simd_enabled(state.simdEnabled);
+
+  // Offload to Web Worker
+  if (worker && workerReady) {
+    worker.postMessage({
+      type: "LOAD_IMAGE",
+      payload: {
+        data: originalRawData,
+        width: w,
+        height: h
+      }
+    });
   }
 
   splitCtx.drawImage(img, 0, 0);
-  applyFilters();
+  requestRender();
 }
 
-// 4. High-Performance Render Loop
+// 5. Render Request Loop
 let renderPending = false;
 function requestRender() {
   if (renderPending) return;
@@ -224,50 +318,58 @@ function requestRender() {
 }
 
 function applyFilters() {
-  if (!processor) return;
+  if (state.workerEnabled && worker && workerReady) {
+    // Background Worker Pipeline (Non-blocking)
+    worker.postMessage({
+      type: "RENDER",
+      payload: {
+        state,
+        curves
+      }
+    });
+  } else if (mainThreadProcessor) {
+    // Main Thread Pipeline (Fallback)
+    const t0 = performance.now();
 
-  const t0 = performance.now();
+    mainThreadProcessor.set_simd_enabled(state.simdEnabled);
+    mainThreadProcessor.apply_pipeline(
+      state.brightness,
+      state.contrast,
+      state.saturation,
+      state.hue,
+      state.gamma,
+      state.blur,
+      state.sharpen,
+      state.unsharpAmount,
+      state.unsharpRadius,
+      state.bilateralSpatial,
+      state.bilateralRange,
+      state.sepia,
+      state.invert,
+      state.grayscale,
+      state.vignette,
+      luts.master,
+      luts.r,
+      luts.g,
+      luts.b
+    );
 
-  processor.set_simd_enabled(state.simdEnabled);
-  processor.apply_pipeline(
-    state.brightness,
-    state.contrast,
-    state.saturation,
-    state.hue,
-    state.gamma,
-    state.blur,
-    state.sharpen,
-    state.unsharpAmount,
-    state.unsharpRadius,
-    state.bilateralSpatial,
-    state.bilateralRange,
-    state.sepia,
-    state.invert,
-    state.grayscale,
-    state.vignette,
-    luts.master,
-    luts.r,
-    luts.g,
-    luts.b
-  );
+    const pixelPtr = mainThreadProcessor.pixel_ptr();
+    const pixelLen = mainThreadProcessor.pixel_len();
+    const wasmMemory = new Uint8ClampedArray(wasmModule.memory.buffer, pixelPtr, pixelLen);
+    const imgData = new ImageData(wasmMemory, mainThreadProcessor.width(), mainThreadProcessor.height());
+    ctx.putImageData(imgData, 0, 0);
 
-  // Fast zero-copy memory slice read from Wasm linear memory
-  const pixelPtr = processor.pixel_ptr();
-  const pixelLen = processor.pixel_len();
-  const wasmMemory = new Uint8ClampedArray(wasmModule.memory.buffer, pixelPtr, pixelLen);
+    const t1 = performance.now();
+    const elapsed = (t1 - t0).toFixed(2);
+    els.wasmExecTime.textContent = `${elapsed} ms`;
 
-  const imgData = new ImageData(wasmMemory, processor.width(), processor.height());
-  ctx.putImageData(imgData, 0, 0);
-
-  const t1 = performance.now();
-  const elapsed = (t1 - t0).toFixed(2);
-  els.wasmExecTime.textContent = `${elapsed} ms`;
-
-  updateHistogram(processor.get_histogram());
-  updateSplitView();
+    updateHistogram(mainThreadProcessor.get_histogram());
+    updateSplitView();
+  }
 }
 
-// 5. Histogram Waveform Renderer
+// 6. Histogram Waveform Renderer
 function updateHistogram(histData) {
   if (!histData || histData.length < 1024) return;
   const w = histCanvas.width;
@@ -280,9 +382,9 @@ function updateHistogram(histData) {
   }
 
   const channels = [
-    { offset: 0, color: "rgba(239, 68, 68, 0.6)" },   // Red
-    { offset: 256, color: "rgba(34, 197, 94, 0.6)" }, // Green
-    { offset: 512, color: "rgba(59, 130, 246, 0.6)" },// Blue
+    { offset: 0, color: "rgba(239, 68, 68, 0.6)" },
+    { offset: 256, color: "rgba(34, 197, 94, 0.6)" },
+    { offset: 512, color: "rgba(59, 130, 246, 0.6)" },
   ];
 
   channels.forEach(({ offset, color }) => {
@@ -300,73 +402,77 @@ function updateHistogram(histData) {
   });
 }
 
-// 6. 3-Way Benchmark: Pure JS vs Rust Scalar vs Rust SIMD128
+// 7. 3-Way Benchmark Runner
 function runBenchmark() {
-  if (!processor || !originalImage) return;
+  if (!originalRawData || !originalImage) return;
 
-  ctx.drawImage(originalImage, 0, 0);
-  const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-  const iterations = 5;
-
-  // 1. Pure JavaScript Benchmark (Convolution Loop)
-  const jsData = new Uint8ClampedArray(imgData.data);
-  const tJsStart = performance.now();
-  for (let iter = 0; iter < iterations; iter++) {
+  if (state.workerEnabled && worker && workerReady) {
+    worker.postMessage({
+      type: "RUN_BENCHMARK",
+      payload: {
+        originalData: originalRawData,
+        width: canvas.width,
+        height: canvas.height,
+        iterations: 5
+      }
+    });
+  } else if (mainThreadProcessor) {
+    const iterations = 5;
     const w = canvas.width;
     const h = canvas.height;
-    for (let y = 1; y < h - 1; y++) {
-      for (let x = 1; x < w - 1; x++) {
-        let idx = (y * w + x) * 4;
-        let lum = 0.299 * jsData[idx] + 0.587 * jsData[idx + 1] + 0.114 * jsData[idx + 2];
-        jsData[idx] = lum;
-        jsData[idx + 1] = lum;
-        jsData[idx + 2] = lum;
+
+    // JS Loop
+    const jsData = new Uint8ClampedArray(originalRawData);
+    const tJsStart = performance.now();
+    for (let iter = 0; iter < iterations; iter++) {
+      for (let y = 1; y < h - 1; y++) {
+        for (let x = 1; x < w - 1; x++) {
+          let idx = (y * w + x) * 4;
+          let lum = 0.299 * jsData[idx] + 0.587 * jsData[idx + 1] + 0.114 * jsData[idx + 2];
+          jsData[idx] = lum; jsData[idx + 1] = lum; jsData[idx + 2] = lum;
+        }
       }
     }
+    const jsAvg = ((performance.now() - tJsStart) / iterations).toFixed(2);
+
+    // Scalar Wasm
+    mainThreadProcessor.set_simd_enabled(false);
+    const tScalarStart = performance.now();
+    for (let i = 0; i < iterations; i++) {
+      mainThreadProcessor.apply_tone_curves(luts.master, luts.r, luts.g, luts.b);
+      mainThreadProcessor.unsharp_mask(1.5, 1.2, 2);
+      mainThreadProcessor.grayscale();
+      mainThreadProcessor.invert();
+      mainThreadProcessor.reset_to_base();
+    }
+    const scalarAvg = ((performance.now() - tScalarStart) / iterations).toFixed(2);
+
+    // SIMD Wasm
+    mainThreadProcessor.set_simd_enabled(true);
+    const tSimdStart = performance.now();
+    for (let i = 0; i < iterations; i++) {
+      mainThreadProcessor.apply_tone_curves(luts.master, luts.r, luts.g, luts.b);
+      mainThreadProcessor.unsharp_mask(1.5, 1.2, 2);
+      mainThreadProcessor.grayscale();
+      mainThreadProcessor.invert();
+      mainThreadProcessor.reset_to_base();
+    }
+    const simdTotal = performance.now() - tSimdStart;
+    const simdAvg = (simdTotal / iterations).toFixed(2);
+
+    const speedup = (parseFloat(jsAvg) / parseFloat(simdAvg)).toFixed(1);
+
+    els.benchJs.textContent = `${jsAvg} ms`;
+    els.benchScalar.textContent = `${scalarAvg} ms`;
+    els.benchSimd.textContent = `${simdAvg} ms`;
+    els.benchSpeedup.textContent = `${speedup}x vs JS`;
+
+    mainThreadProcessor.set_simd_enabled(state.simdEnabled);
+    requestRender();
   }
-  const jsTotal = performance.now() - tJsStart;
-  const jsAvg = (jsTotal / iterations).toFixed(2);
-
-  // 2. Rust Scalar Benchmark (Opt-3, SIMD off)
-  processor.set_simd_enabled(false);
-  const tScalarStart = performance.now();
-  for (let i = 0; i < iterations; i++) {
-    processor.apply_tone_curves(luts.master, luts.r, luts.g, luts.b);
-    processor.unsharp_mask(1.5, 1.2, 2);
-    processor.grayscale();
-    processor.invert();
-    processor.reset_to_base();
-  }
-  const scalarTotal = performance.now() - tScalarStart;
-  const scalarAvg = (scalarTotal / iterations).toFixed(2);
-
-  // 3. Rust SIMD128 Benchmark (Opt-3 + 128-bit Vector Intrinsics)
-  processor.set_simd_enabled(true);
-  const tSimdStart = performance.now();
-  for (let i = 0; i < iterations; i++) {
-    processor.apply_tone_curves(luts.master, luts.r, luts.g, luts.b);
-    processor.unsharp_mask(1.5, 1.2, 2);
-    processor.grayscale();
-    processor.invert();
-    processor.reset_to_base();
-  }
-  const simdTotal = performance.now() - tSimdStart;
-  const simdAvg = (simdTotal / iterations).toFixed(2);
-
-  // Calculate speedup
-  const speedup = (jsTotal / simdTotal).toFixed(1);
-
-  els.benchJs.textContent = `${jsAvg} ms`;
-  els.benchScalar.textContent = `${scalarAvg} ms`;
-  els.benchSimd.textContent = `${simdAvg} ms`;
-  els.benchSpeedup.textContent = `${speedup}x vs JS`;
-
-  // Restore user's active SIMD setting
-  processor.set_simd_enabled(state.simdEnabled);
-  applyFilters();
 }
 
-// 7. Sample Procedural Image Generator
+// 8. Sample Procedural Image Generator
 function loadSampleProceduralImage() {
   const tempCanvas = document.createElement("canvas");
   tempCanvas.width = 1280;
@@ -393,8 +499,17 @@ function loadSampleProceduralImage() {
   img.src = tempCanvas.toDataURL();
 }
 
-// 8. Event Listeners & Interactive Curve Editor
+// 9. Event Listeners & Interactive Curve Editor
 function setupEventListeners() {
+  // Web Worker Hardware Toggle
+  if (els.toggleWorker) {
+    els.toggleWorker.addEventListener("change", (e) => {
+      state.workerEnabled = e.target.checked;
+      updateThreadStatus();
+      requestRender();
+    });
+  }
+
   // SIMD Hardware Toggle
   if (els.toggleSimd) {
     els.toggleSimd.addEventListener("change", (e) => {
@@ -403,8 +518,8 @@ function setupEventListeners() {
         els.simdStatus.textContent = state.simdEnabled ? "SIMD128 ⚡" : "Scalar Mode";
         els.simdStatus.className = state.simdEnabled ? "metric-val status-online" : "metric-val";
       }
-      if (processor) {
-        processor.set_simd_enabled(state.simdEnabled);
+      if (mainThreadProcessor) {
+        mainThreadProcessor.set_simd_enabled(state.simdEnabled);
       }
       requestRender();
     });
@@ -534,43 +649,54 @@ function setupEventListeners() {
 
   // Instant Kernels
   els.btnSobel.addEventListener("click", () => {
-    if (!processor) return;
-    processor.sobel_edges();
-    const ptr = processor.pixel_ptr();
-    const len = processor.pixel_len();
-    ctx.putImageData(new ImageData(new Uint8ClampedArray(wasmModule.memory.buffer, ptr, len), canvas.width, canvas.height), 0, 0);
+    if (mainThreadProcessor) {
+      mainThreadProcessor.sobel_edges();
+      const ptr = mainThreadProcessor.pixel_ptr();
+      const len = mainThreadProcessor.pixel_len();
+      ctx.putImageData(new ImageData(new Uint8ClampedArray(wasmModule.memory.buffer, ptr, len), canvas.width, canvas.height), 0, 0);
+    }
   });
 
   els.btnEmboss.addEventListener("click", () => {
-    if (!processor) return;
-    processor.emboss();
-    const ptr = processor.pixel_ptr();
-    const len = processor.pixel_len();
-    ctx.putImageData(new ImageData(new Uint8ClampedArray(wasmModule.memory.buffer, ptr, len), canvas.width, canvas.height), 0, 0);
+    if (mainThreadProcessor) {
+      mainThreadProcessor.emboss();
+      const ptr = mainThreadProcessor.pixel_ptr();
+      const len = mainThreadProcessor.pixel_len();
+      ctx.putImageData(new ImageData(new Uint8ClampedArray(wasmModule.memory.buffer, ptr, len), canvas.width, canvas.height), 0, 0);
+    }
   });
 
   // Geometry
   els.btnFlipH.addEventListener("click", () => {
-    if (!processor) return;
-    processor.flip_horizontal();
-    applyFilters();
+    if (state.workerEnabled && worker && workerReady) {
+      worker.postMessage({ type: "TRANSFORM", payload: { action: "FLIP_H" } });
+    } else if (mainThreadProcessor) {
+      mainThreadProcessor.flip_horizontal();
+      applyFilters();
+    }
   });
 
   els.btnFlipV.addEventListener("click", () => {
-    if (!processor) return;
-    processor.flip_vertical();
-    applyFilters();
+    if (state.workerEnabled && worker && workerReady) {
+      worker.postMessage({ type: "TRANSFORM", payload: { action: "FLIP_V" } });
+    } else if (mainThreadProcessor) {
+      mainThreadProcessor.flip_vertical();
+      applyFilters();
+    }
   });
 
   els.btnRotate90.addEventListener("click", () => {
-    if (!processor) return;
-    processor.rotate_90();
-    canvas.width = processor.width();
-    canvas.height = processor.height();
-    splitCanvas.width = canvas.width;
-    splitCanvas.height = canvas.height;
-    els.imageDimensions.textContent = `${canvas.width} × ${canvas.height}`;
-    applyFilters();
+    if (state.workerEnabled && worker && workerReady) {
+      worker.postMessage({ type: "TRANSFORM", payload: { action: "ROTATE_90" } });
+    } else if (mainThreadProcessor) {
+      mainThreadProcessor.rotate_90();
+      canvas.width = mainThreadProcessor.width();
+      canvas.height = mainThreadProcessor.height();
+      splitCanvas.width = canvas.width;
+      splitCanvas.height = canvas.height;
+      els.imageDimensions.textContent = `${canvas.width} × ${canvas.height}`;
+      applyFilters();
+    }
   });
 
   // Presets
@@ -640,8 +766,8 @@ function setupEventListeners() {
     resetState();
     updateAllLuts();
     syncControls();
-    if (processor) processor.reset_to_base();
-    applyFilters();
+    if (mainThreadProcessor) mainThreadProcessor.reset_to_base();
+    requestRender();
   });
 
   // Export
@@ -756,6 +882,7 @@ function syncControls() {
   els.valBilateralRange.textContent = state.bilateralRange;
 
   if (els.toggleSimd) els.toggleSimd.checked = state.simdEnabled;
+  if (els.toggleWorker) els.toggleWorker.checked = state.workerEnabled;
 
   els.btnGrayscale.classList.toggle("active", state.grayscale);
   els.btnSepia.classList.toggle("active", state.sepia);
