@@ -109,6 +109,18 @@ body {
   color: var(--accent);
 }
 
+.metric-val.fps-high {
+  color: #10b981;
+}
+
+.metric-val.fps-med {
+  color: #f59e0b;
+}
+
+.metric-val.fps-low {
+  color: #ef4444;
+}
+
 /* Workspace */
 .workspace {
   display: grid;
@@ -386,6 +398,15 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+
+.flex-column {
+  display: flex;
+  flex-direction: column;
+}
+
+.gap-2 {
+  gap: 8px;
 }
 
 .btn-micro {
