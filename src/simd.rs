@@ -258,3 +258,110 @@ pub fn simd_unsharp_mask(buffer: &mut [u8], blurred: &[u8], amount: f32, thresho
         }
     }
 }
+
+/// Vectorized Mask Compositing (Blends 4 RGBA pixels at a time with 8-bit alpha mask).
+pub fn simd_mask_composite(current: &mut [u8], base: &[u8], mask: &[u8]) {
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    {
+        let mut chunks_curr = current.chunks_exact_mut(16);
+        let mut chunks_base = base.chunks_exact(16);
+        let mut chunks_mask = mask.chunks_exact(4);
+
+        for ((chunk_c, chunk_b), m_4) in chunks_curr.by_ref().zip(chunks_base.by_ref()).zip(chunks_mask.by_ref()) {
+            let m0 = m_4[0];
+            let m1 = m_4[1];
+            let m2 = m_4[2];
+            let m3 = m_4[3];
+
+            // If all 4 pixels are 100% masked, skip blending
+            if m0 == 255 && m1 == 255 && m2 == 255 && m3 == 255 {
+                continue;
+            }
+            // If all 4 pixels are 0% masked, copy base directly
+            if m0 == 0 && m1 == 0 && m2 == 0 && m3 == 0 {
+                let vb = v128_load(chunk_b.as_ptr() as *const v128);
+                v128_store(chunk_c.as_mut_ptr() as *mut v128, vb);
+                continue;
+            }
+
+            let v_curr = v128_load(chunk_c.as_ptr() as *const v128);
+            let v_base = v128_load(chunk_b.as_ptr() as *const v128);
+
+            // Vector weights for pixels 0 & 1
+            let w_low = i16x8(
+                m0 as i16, m0 as i16, m0 as i16, 255,
+                m1 as i16, m1 as i16, m1 as i16, 255,
+            );
+            let inv_w_low = i16x8(
+                (255 - m0) as i16, (255 - m0) as i16, (255 - m0) as i16, 0,
+                (255 - m1) as i16, (255 - m1) as i16, (255 - m1) as i16, 0,
+            );
+
+            // Vector weights for pixels 2 & 3
+            let w_high = i16x8(
+                m2 as i16, m2 as i16, m2 as i16, 255,
+                m3 as i16, m3 as i16, m3 as i16, 255,
+            );
+            let inv_w_high = i16x8(
+                (255 - m2) as i16, (255 - m2) as i16, (255 - m2) as i16, 0,
+                (255 - m3) as i16, (255 - m3) as i16, (255 - m3) as i16, 0,
+            );
+
+            let curr_low = i16x8_extend_low_u8x16(v_curr);
+            let base_low = i16x8_extend_low_u8x16(v_base);
+            let blend_low = i16x8_add(i16x8_mul(curr_low, w_low), i16x8_mul(base_low, inv_w_low));
+            let res_low = i16x8_shr(blend_low, 8);
+
+            let curr_high = i16x8_extend_high_u8x16(v_curr);
+            let base_high = i16x8_extend_high_u8x16(v_base);
+            let blend_high = i16x8_add(i16x8_mul(curr_high, w_high), i16x8_mul(base_high, inv_w_high));
+            let res_high = i16x8_shr(blend_high, 8);
+
+            let res = u8x16_narrow_i16x8(res_low, res_high);
+            v128_store(chunk_c.as_mut_ptr() as *mut v128, res);
+        }
+
+        let rem_c = chunks_curr.into_remainder();
+        let rem_b = chunks_base.into_remainder();
+        let rem_m = chunks_mask.into_remainder();
+
+        for ((chunk_c, chunk_b), &m) in rem_c.chunks_exact_mut(4).zip(rem_b.chunks_exact(4)).zip(rem_m.iter()) {
+            if m == 255 {
+                continue;
+            } else if m == 0 {
+                chunk_c[0] = chunk_b[0];
+                chunk_c[1] = chunk_b[1];
+                chunk_c[2] = chunk_b[2];
+            } else {
+                let m_u32 = m as u32;
+                let inv_m = 255 - m_u32;
+                chunk_c[0] = ((m_u32 * chunk_c[0] as u32 + inv_m * chunk_b[0] as u32 + 127) / 255) as u8;
+                chunk_c[1] = ((m_u32 * chunk_c[1] as u32 + inv_m * chunk_b[1] as u32 + 127) / 255) as u8;
+                chunk_c[2] = ((m_u32 * chunk_c[2] as u32 + inv_m * chunk_b[2] as u32 + 127) / 255) as u8;
+            }
+        }
+    }
+
+    #[cfg(not(all(target_arch = "wasm32", target_feature = "simd128")))]
+    {
+        for (chunk_curr, (chunk_base, &m)) in current
+            .chunks_exact_mut(4)
+            .zip(base.chunks_exact(4).zip(mask.iter()))
+        {
+            if m == 255 {
+                continue;
+            } else if m == 0 {
+                chunk_curr[0] = chunk_base[0];
+                chunk_curr[1] = chunk_base[1];
+                chunk_curr[2] = chunk_base[2];
+            } else {
+                let m_u32 = m as u32;
+                let inv_m = 255 - m_u32;
+                chunk_curr[0] = ((m_u32 * chunk_curr[0] as u32 + inv_m * chunk_base[0] as u32 + 127) / 255) as u8;
+                chunk_curr[1] = ((m_u32 * chunk_curr[1] as u32 + inv_m * chunk_base[1] as u32 + 127) / 255) as u8;
+                chunk_curr[2] = ((m_u32 * chunk_curr[2] as u32 + inv_m * chunk_base[2] as u32 + 127) / 255) as u8;
+            }
+        }
+    }
+}
+
