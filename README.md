@@ -102,8 +102,22 @@ The engine leverages WebAssembly 128-bit SIMD (`core::arch::wasm32::*`) to proce
 
 ---
 
+## 🖌️ Selective Adjustment Brush & Local Masking
+
+The engine features a dedicated 8-bit alpha mask buffer (`src/masks.rs`) allowing users to paint localized adjustments without altering unaffected pixels:
+
+* **Radial Cosine Smoothstep Stamp**: Evaluates a smooth continuous falloff curve:
+  $$f(d) = \frac{1 + \cos\left(\pi \cdot \frac{d - r_{\text{inner}}}{r_{\text{outer}} - r_{\text{inner}}}\right)}{2}$$
+* **Continuous Line Interpolation**: Subsamples stroke intervals at $25\%$ brush radius to prevent stamp gaps during fast cursor movements.
+* **SIMD128 Mask Alpha Compositing**: Blends filtered working pixels with original base pixels using vector lerp instructions:
+  $$I_{\text{final}}(c) = \frac{\text{Mask} \cdot I_{\text{filtered}}(c) + (255 - \text{Mask}) \cdot I_{\text{base}}(c)}{255}$$
+* **Rubylith Mask Overlay**: Real-time translucent red preview (`rgba(244, 63, 94, 0.45)`) showing exact brush weights.
+
+---
+
 ## ✨ Features & Filter Suite
 
+- **Selective Adjustment Brush**: Paint & erase local masks with adjustable size, feathering, and flow.
 - **Dedicated Web Worker & OffscreenCanvas**: Guarantees locked 60 FPS main thread responsiveness.
 - **128-Bit WASM SIMD Vectorization**: Accelerates pixel manipulations and convolutions with 16-channel parallel instructions.
 - **Interactive RGB Tone Curves**: Full cubic spline curve editor for Master RGB, Red, Green, and Blue channels with draggable anchor points.
