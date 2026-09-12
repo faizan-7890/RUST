@@ -142,6 +142,76 @@ self.onmessage = async (e) => {
       break;
     }
 
+    case "BRUSH_STROKE": {
+      if (!processor) return;
+      const { x0, y0, x1, y1, radius, feather, opacity, erase, state, curves } = payload;
+      processor.draw_brush_stroke(x0, y0, x1, y1, radius, feather, opacity, erase);
+
+      // Trigger instant re-render with the updated mask
+      if (state) {
+        if (curves) {
+          updateChannelLut(curves.master, "master");
+          updateChannelLut(curves.r, "r");
+          updateChannelLut(curves.g, "g");
+          updateChannelLut(curves.b, "b");
+        }
+        processor.set_simd_enabled(state.simdEnabled ?? useSimd);
+        processor.apply_pipeline(
+          state.brightness, state.contrast, state.saturation, state.hue, state.gamma,
+          state.blur, state.sharpen, state.unsharpAmount, state.unsharpRadius,
+          state.bilateralSpatial, state.bilateralRange, state.sepia, state.invert,
+          state.grayscale, state.vignette, luts.master, luts.r, luts.g, luts.b
+        );
+      }
+
+      if (offscreenCanvas && offscreenCtx) {
+        const pixelPtr = processor.pixel_ptr();
+        const pixelLen = processor.pixel_len();
+        const wasmMemory = new Uint8ClampedArray(wasmModule.memory.buffer, pixelPtr, pixelLen);
+        const imgData = new ImageData(wasmMemory, processor.width(), processor.height());
+        offscreenCtx.putImageData(imgData, 0, 0);
+      }
+
+      const maskBytes = processor.get_mask();
+      self.postMessage({
+        type: "MASK_UPDATED",
+        mask: maskBytes.buffer,
+        width: processor.width(),
+        height: processor.height(),
+        hasActiveMask: processor.is_mask_enabled()
+      }, [maskBytes.buffer]);
+      break;
+    }
+
+    case "CLEAR_MASK": {
+      if (!processor) return;
+      processor.clear_mask();
+      processor.set_mask_enabled(false);
+      self.postMessage({ type: "MASK_CLEARED" });
+      break;
+    }
+
+    case "INVERT_MASK": {
+      if (!processor) return;
+      processor.invert_mask();
+      const maskBytes = processor.get_mask();
+      self.postMessage({
+        type: "MASK_UPDATED",
+        mask: maskBytes.buffer,
+        width: processor.width(),
+        height: processor.height(),
+        hasActiveMask: processor.is_mask_enabled()
+      }, [maskBytes.buffer]);
+      break;
+    }
+
+    case "TOGGLE_MASK": {
+      if (!processor) return;
+      processor.set_mask_enabled(payload.enabled);
+      self.postMessage({ type: "MASK_TOGGLED", enabled: payload.enabled });
+      break;
+    }
+
     case "TRANSFORM": {
       if (!processor) return;
       const { action } = payload;
