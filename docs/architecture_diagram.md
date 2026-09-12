@@ -130,3 +130,28 @@ flowchart TD
 | **Color Invert & Brightness Pass** | ~14.0 ms | ~1.8 ms | **~0.3 ms** | **~46x faster** |
 | **Sobel Edge Detection** | ~62.1 ms | ~6.8 ms | **~2.1 ms** | **~29x faster** |
 | **RGB Waveform Histogram** | ~18.5 ms | ~1.9 ms | **~0.7 ms** | **~26x faster** |
+
+---
+
+## 5. Selective Masking & Alpha Blend Pipeline
+
+```mermaid
+flowchart LR
+    subgraph Input_Sources["Image & Mask Sources"]
+        Base["📦 Base Image Buffer (RGBA)"]
+        Curr["⚡ Filtered Buffer (RGBA)"]
+        Mask["🖌️ 8-bit Alpha Mask Buffer (u8)"]
+    end
+
+    subgraph Blend_Equation["Alpha Blend Stage (SIMD128 Lerp)"]
+        Math["C_final = (Mask * C_curr + (255 - Mask) * C_base) / 255"]
+    end
+
+    subgraph Output["Composited Output"]
+        Out["🖼️ Targeted Selective Filter Output"]
+    end
+
+    Base & Curr & Mask --> Math
+    Math --> Out
+```
+
