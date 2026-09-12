@@ -11,6 +11,9 @@ let originalRawData = null;
 
 let canvas = document.getElementById("mainCanvas");
 let ctx = canvas.getContext("2d", { willReadFrequently: true });
+let maskCanvas = document.getElementById("maskCanvas");
+let maskCtx = maskCanvas ? maskCanvas.getContext("2d") : null;
+let brushCursor = document.getElementById("brushCursor");
 let splitCanvas = document.getElementById("splitCanvas");
 let splitCtx = splitCanvas.getContext("2d");
 let histCanvas = document.getElementById("histogramCanvas");
@@ -30,6 +33,19 @@ const luts = {
   r: new Uint8Array(256),
   g: new Uint8Array(256),
   b: new Uint8Array(256),
+};
+
+// Selective Brush State
+const brush = {
+  active: false,
+  radius: 40,
+  feather: 0.5,
+  opacity: 0.8,
+  erase: false,
+  showOverlay: true,
+  drawing: false,
+  lastX: null,
+  lastY: null,
 };
 
 // Filter State
@@ -88,6 +104,20 @@ const els = {
   benchSimd: document.getElementById("benchSimd"),
   benchJs: document.getElementById("benchJs"),
   benchSpeedup: document.getElementById("benchSpeedup"),
+  // Selective Adjustment Brush Elements
+  btnToggleBrush: document.getElementById("btnToggleBrush"),
+  maskStatusBadge: document.getElementById("maskStatusBadge"),
+  btnBrushPaint: document.getElementById("btnBrushPaint"),
+  btnBrushErase: document.getElementById("btnBrushErase"),
+  sliderBrushSize: document.getElementById("sliderBrushSize"),
+  valBrushSize: document.getElementById("valBrushSize"),
+  sliderBrushFeather: document.getElementById("sliderBrushFeather"),
+  valBrushFeather: document.getElementById("valBrushFeather"),
+  sliderBrushOpacity: document.getElementById("sliderBrushOpacity"),
+  valBrushOpacity: document.getElementById("valBrushOpacity"),
+  toggleMaskOverlay: document.getElementById("toggleMaskOverlay"),
+  btnClearMask: document.getElementById("btnClearMask"),
+  btnInvertMask: document.getElementById("btnInvertMask"),
   // Tone Curve Elements
   curveSvg: document.getElementById("curveSvg"),
   curvePath: document.getElementById("curvePath"),
@@ -98,6 +128,26 @@ const els = {
   sliderContrast: document.getElementById("sliderContrast"),
   valContrast: document.getElementById("valContrast"),
   sliderSaturation: document.getElementById("sliderSaturation"),
+  valSaturation: document.getElementById("valSaturation"),
+  sliderHue: document.getElementById("sliderHue"),
+  valHue: document.getElementById("valHue"),
+  sliderGamma: document.getElementById("sliderGamma"),
+  valGamma: document.getElementById("valGamma"),
+  sliderVignette: document.getElementById("sliderVignette"),
+  valVignette: document.getElementById("valVignette"),
+  sliderBlur: document.getElementById("sliderBlur"),
+  valBlur: document.getElementById("valBlur"),
+  sliderSharpen: document.getElementById("sliderSharpen"),
+  valSharpen: document.getElementById("valSharpen"),
+  sliderUnsharpAmount: document.getElementById("sliderUnsharpAmount"),
+  valUnsharpAmount: document.getElementById("valUnsharpAmount"),
+  sliderUnsharpRadius: document.getElementById("sliderUnsharpRadius"),
+  valUnsharpRadius: document.getElementById("valUnsharpRadius"),
+  sliderBilateralSpatial: document.getElementById("sliderBilateralSpatial"),
+  valBilateralSpatial: document.getElementById("valBilateralSpatial"),
+  sliderBilateralRange: document.getElementById("sliderBilateralRange"),
+  valBilateralRange: document.getElementById("valBilateralRange"),
+};
   valSaturation: document.getElementById("valSaturation"),
   sliderHue: document.getElementById("sliderHue"),
   valHue: document.getElementById("valHue"),
@@ -194,6 +244,15 @@ function initWorker() {
         els.benchScalar.textContent = `${scalarAvg} ms`;
         els.benchSimd.textContent = `${simdAvg} ms`;
         els.benchSpeedup.textContent = `${speedup}x vs JS`;
+        requestRender();
+      } else if (type === "MASK_UPDATED") {
+        updateMaskStatus(e.data.hasActiveMask);
+        if (e.data.mask) {
+          renderMaskOverlay(e.data.mask, e.data.width, e.data.height);
+        }
+      } else if (type === "MASK_CLEARED") {
+        updateMaskStatus(false);
+        if (maskCtx && maskCanvas) maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
         requestRender();
       }
     };
@@ -302,8 +361,74 @@ function setupImage(img) {
     });
   }
 
+  if (maskCanvas) {
+    maskCanvas.width = w;
+    maskCanvas.height = h;
+    if (maskCtx) maskCtx.clearRect(0, 0, w, h);
+  }
+  updateMaskStatus(false);
+
   splitCtx.drawImage(img, 0, 0);
   requestRender();
+}
+
+function updateMaskStatus(hasActiveMask) {
+  if (!els.maskStatusBadge) return;
+  if (hasActiveMask) {
+    els.maskStatusBadge.textContent = "Mask Active";
+    els.maskStatusBadge.className = "badge-micro active-mask";
+  } else {
+    els.maskStatusBadge.textContent = "Global Mode";
+    els.maskStatusBadge.className = "badge-micro";
+  }
+}
+
+function renderMaskOverlay(maskBuffer, width, height) {
+  if (!maskCanvas || !maskCtx || !brush.showOverlay) {
+    if (maskCtx && maskCanvas) maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+    return;
+  }
+  if (maskCanvas.width !== width || maskCanvas.height !== height) {
+    maskCanvas.width = width;
+    maskCanvas.height = height;
+  }
+  const maskBytes = new Uint8Array(maskBuffer);
+  const imgData = maskCtx.createImageData(width, height);
+  const data = imgData.data;
+  for (let i = 0; i < maskBytes.length; i++) {
+    const m = maskBytes[i];
+    if (m > 0) {
+      const idx = i * 4;
+      data[idx] = 244;
+      data[idx + 1] = 63;
+      data[idx + 2] = 94;
+      data[idx + 3] = Math.round(m * 0.55);
+    }
+  }
+  maskCtx.putImageData(imgData, 0, 0);
+  maskCanvas.style.display = "block";
+}
+
+function dispatchBrushStroke(x0, y0, x1, y1) {
+  if (state.workerEnabled && worker && workerReady) {
+    worker.postMessage({
+      type: "BRUSH_STROKE",
+      payload: {
+        x0, y0, x1, y1,
+        radius: brush.radius,
+        feather: brush.feather,
+        opacity: brush.opacity,
+        erase: brush.erase,
+        state,
+        curves
+      }
+    });
+  } else if (mainThreadProcessor) {
+    mainThreadProcessor.draw_brush_stroke(x0, y0, x1, y1, brush.radius, brush.feather, brush.opacity, brush.erase);
+    applyFilters();
+    renderMaskOverlay(mainThreadProcessor.get_mask(), mainThreadProcessor.width(), mainThreadProcessor.height());
+    updateMaskStatus(true);
+  }
 }
 
 // 5. Render Request Loop
@@ -522,6 +647,156 @@ function setupEventListeners() {
         mainThreadProcessor.set_simd_enabled(state.simdEnabled);
       }
       requestRender();
+    });
+  }
+
+  // Selective Adjustment Brush Controls
+  if (els.btnToggleBrush) {
+    els.btnToggleBrush.addEventListener("click", () => {
+      brush.active = !brush.active;
+      els.btnToggleBrush.classList.toggle("active", brush.active);
+      if (brushCursor) {
+        brushCursor.style.display = brush.active ? "block" : "none";
+      }
+      canvas.style.cursor = brush.active ? "none" : "default";
+      if (maskCanvas) maskCanvas.style.cursor = brush.active ? "none" : "default";
+    });
+  }
+
+  if (els.btnBrushPaint) {
+    els.btnBrushPaint.addEventListener("click", () => {
+      brush.erase = false;
+      els.btnBrushPaint.classList.add("active");
+      if (els.btnBrushErase) els.btnBrushErase.classList.remove("active");
+    });
+  }
+
+  if (els.btnBrushErase) {
+    els.btnBrushErase.addEventListener("click", () => {
+      brush.erase = true;
+      els.btnBrushErase.classList.add("active");
+      if (els.btnBrushPaint) els.btnBrushPaint.classList.remove("active");
+    });
+  }
+
+  if (els.sliderBrushSize) {
+    els.sliderBrushSize.addEventListener("input", (e) => {
+      brush.radius = parseFloat(e.target.value);
+      if (els.valBrushSize) els.valBrushSize.textContent = `${brush.radius} px`;
+      updateBrushCursorMetrics();
+    });
+  }
+
+  if (els.sliderBrushFeather) {
+    els.sliderBrushFeather.addEventListener("input", (e) => {
+      brush.feather = parseFloat(e.target.value);
+      if (els.valBrushFeather) els.valBrushFeather.textContent = `${Math.round(brush.feather * 100)}%`;
+      updateBrushCursorMetrics();
+    });
+  }
+
+  if (els.sliderBrushOpacity) {
+    els.sliderBrushOpacity.addEventListener("input", (e) => {
+      brush.opacity = parseFloat(e.target.value);
+      if (els.valBrushOpacity) els.valBrushOpacity.textContent = `${Math.round(brush.opacity * 100)}%`;
+    });
+  }
+
+  if (els.toggleMaskOverlay) {
+    els.toggleMaskOverlay.addEventListener("change", (e) => {
+      brush.showOverlay = e.target.checked;
+      if (maskCanvas) maskCanvas.style.display = brush.showOverlay ? "block" : "none";
+    });
+  }
+
+  if (els.btnClearMask) {
+    els.btnClearMask.addEventListener("click", () => {
+      if (state.workerEnabled && worker && workerReady) {
+        worker.postMessage({ type: "CLEAR_MASK" });
+      } else if (mainThreadProcessor) {
+        mainThreadProcessor.clear_mask();
+        mainThreadProcessor.set_mask_enabled(false);
+        updateMaskStatus(false);
+        if (maskCtx && maskCanvas) maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+        applyFilters();
+      }
+    });
+  }
+
+  if (els.btnInvertMask) {
+    els.btnInvertMask.addEventListener("click", () => {
+      if (state.workerEnabled && worker && workerReady) {
+        worker.postMessage({ type: "INVERT_MASK" });
+      } else if (mainThreadProcessor) {
+        mainThreadProcessor.invert_mask();
+        updateMaskStatus(true);
+        renderMaskOverlay(mainThreadProcessor.get_mask(), mainThreadProcessor.width(), mainThreadProcessor.height());
+        applyFilters();
+      }
+    });
+  }
+
+  function updateBrushCursorMetrics() {
+    if (!brushCursor) return;
+    const diameter = brush.radius * 2;
+    brushCursor.style.width = `${diameter}px`;
+    brushCursor.style.height = `${diameter}px`;
+    const innerPct = Math.round((1 - brush.feather) * 100);
+    brushCursor.style.setProperty("--inner-size", `${innerPct}%`);
+  }
+  updateBrushCursorMetrics();
+
+  // Canvas Viewport Pointer Events for Brush Painting
+  const canvasViewEl = document.getElementById("canvasView");
+  if (canvasViewEl) {
+    const getImageCoords = (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = canvas.width / rect.width;
+      const scaleY = canvas.height / rect.height;
+      return {
+        x: (e.clientX - rect.left) * scaleX,
+        y: (e.clientY - rect.top) * scaleY,
+      };
+    };
+
+    canvasViewEl.addEventListener("pointerdown", (e) => {
+      if (!brush.active) return;
+      canvasViewEl.setPointerCapture(e.pointerId);
+      brush.drawing = true;
+      const { x, y } = getImageCoords(e);
+      brush.lastX = x;
+      brush.lastY = y;
+      dispatchBrushStroke(x, y, x, y);
+    });
+
+    window.addEventListener("pointermove", (e) => {
+      if (brush.active && brushCursor) {
+        brushCursor.style.left = `${e.clientX}px`;
+        brushCursor.style.top = `${e.clientY}px`;
+        brushCursor.style.display = "block";
+      }
+
+      if (!brush.active || !brush.drawing) return;
+      const { x, y } = getImageCoords(e);
+      dispatchBrushStroke(brush.lastX ?? x, brush.lastY ?? y, x, y);
+      brush.lastX = x;
+      brush.lastY = y;
+    });
+
+    window.addEventListener("pointerup", () => {
+      if (brush.drawing) {
+        brush.drawing = false;
+        brush.lastX = null;
+        brush.lastY = null;
+      }
+    });
+
+    canvasViewEl.addEventListener("pointerleave", () => {
+      if (brushCursor) brushCursor.style.display = "none";
+    });
+
+    canvasViewEl.addEventListener("pointerenter", () => {
+      if (brush.active && brushCursor) brushCursor.style.display = "block";
     });
   }
 
