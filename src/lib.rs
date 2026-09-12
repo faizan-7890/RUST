@@ -3,6 +3,7 @@ mod filters;
 mod convolutions;
 mod transform;
 pub mod simd;
+pub mod masks;
 
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::Clamped;
@@ -26,6 +27,8 @@ pub struct ImageProcessor {
     height: u32,
     base_pixels: Vec<u8>,
     current_pixels: Vec<u8>,
+    mask_pixels: Vec<u8>,
+    mask_enabled: bool,
     use_simd: bool,
 }
 
@@ -36,12 +39,15 @@ impl ImageProcessor {
     pub fn new(width: u32, height: u32) -> Self {
         utils::set_panic_hook();
         let size = (width * height * 4) as usize;
+        let mask_size = (width * height) as usize;
         let simd_active = simd::is_simd_supported();
         Self {
             width,
             height,
             base_pixels: vec![0u8; size],
             current_pixels: vec![0u8; size],
+            mask_pixels: vec![0u8; mask_size],
+            mask_enabled: false,
             use_simd: simd_active,
         }
     }
@@ -52,6 +58,8 @@ impl ImageProcessor {
         self.height = height;
         self.base_pixels = data.0;
         self.current_pixels = self.base_pixels.clone();
+        self.mask_pixels = vec![0u8; (width * height) as usize];
+        self.mask_enabled = false;
     }
 
     /// Toggles WASM SIMD128 acceleration mode on or off.
@@ -102,6 +110,76 @@ impl ImageProcessor {
     /// Computes 4x256 RGB + Luminance channel histogram.
     pub fn get_histogram(&self) -> Vec<u32> {
         filters::compute_histogram(&self.current_pixels)
+    }
+
+    // --- Selective Adjustment Alpha Mask ---
+
+    /// Returns direct pointer to the 8-bit alpha mask buffer.
+    pub fn mask_ptr(&self) -> *const u8 {
+        self.mask_pixels.as_ptr()
+    }
+
+    /// Returns mask buffer length in bytes (width * height).
+    pub fn mask_len(&self) -> usize {
+        self.mask_pixels.len()
+    }
+
+    /// Returns the mask buffer as a Uint8ClampedArray for visualization.
+    pub fn get_mask(&self) -> Clamped<Vec<u8>> {
+        Clamped(self.mask_pixels.clone())
+    }
+
+    /// Toggles selective mask compositing mode on or off.
+    pub fn set_mask_enabled(&mut self, enabled: bool) {
+        self.mask_enabled = enabled;
+    }
+
+    /// Returns whether selective mask compositing is currently active.
+    pub fn is_mask_enabled(&self) -> bool {
+        self.mask_enabled
+    }
+
+    /// Clears the 8-bit alpha mask buffer to 0.
+    pub fn clear_mask(&mut self) {
+        masks::clear_mask(&mut self.mask_pixels);
+    }
+
+    /// Fills the mask buffer with a constant value.
+    pub fn fill_mask(&mut self, val: u8) {
+        masks::fill_mask(&mut self.mask_pixels, val);
+    }
+
+    /// Inverts the mask buffer (255 - val).
+    pub fn invert_mask(&mut self) {
+        masks::invert_mask(&mut self.mask_pixels);
+    }
+
+    /// Draws a smooth interpolated brush stroke on the alpha mask between (x0, y0) and (x1, y1).
+    pub fn draw_brush_stroke(
+        &mut self,
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+        radius: f32,
+        feather: f32,
+        opacity: f32,
+        erase: bool,
+    ) {
+        masks::draw_brush_line(
+            &mut self.mask_pixels,
+            self.width,
+            self.height,
+            x0,
+            y0,
+            x1,
+            y1,
+            radius,
+            feather,
+            opacity,
+            erase,
+        );
+        self.mask_enabled = true;
     }
 
     // --- Tone Curves ---
@@ -348,6 +426,15 @@ impl ImageProcessor {
                 simd::simd_unsharp_mask(&mut self.current_pixels, &blurred, unsharp_amount, 2);
             } else {
                 convolutions::apply_unsharp_mask(&mut self.current_pixels, self.width, self.height, unsharp_radius, unsharp_amount, 2);
+            }
+        }
+
+        // 4. Selective Mask Alpha Blending (if active)
+        if self.mask_enabled {
+            if self.use_simd {
+                simd::simd_mask_composite(&mut self.current_pixels, &self.base_pixels, &self.mask_pixels);
+            } else {
+                masks::composite_with_mask(&mut self.current_pixels, &self.base_pixels, &self.mask_pixels);
             }
         }
     }
