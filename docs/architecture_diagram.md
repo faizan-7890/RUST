@@ -11,36 +11,36 @@
 The system decouples the **Browser UI presentation layer** from the **compute-intensive mathematical kernel engine**, running WebAssembly within a dedicated background worker thread:
 
 ```mermaid
-graph TB
-    subgraph Main_Thread["🌐 Presentation & UI Layer (Main Thread)"]
-        UI["🖥️ HTML5 Canvas UI\n(Tone Curve SVG, Sliders, Split View, Drag & Drop)"]
-        Controller["⚙️ Controller (main.js)\n(State Machine, Event Dispatcher & UI FPS Monitor)"]
-        HistCanvas["📊 Waveform Display\n(Live 4-Channel Histogram)"]
+flowchart TD
+    subgraph Main_Thread["🌐 Presentation and UI Layer (Main Thread)"]
+        UI["🖥️ HTML5 Canvas UI<br/>(Tone Curve SVG, Sliders, Split View, Drag and Drop)"]
+        Controller["⚙️ Controller (main.js)<br/>(State Machine, Event Dispatcher, UI FPS Monitor)"]
+        HistCanvas["📊 Waveform Display<br/>(Live 4-Channel Histogram)"]
     end
 
     subgraph Worker_Thread["🧵 Background Worker Thread (worker.js)"]
-        WorkerRouter["📬 Message Router & Dispatcher\n(INIT, LOAD, RENDER, BENCHMARK)"]
-        Offscreen["🎨 OffscreenCanvas Context\n(Zero-latency Direct Background Blit)"]
+        WorkerRouter["📬 Message Router and Dispatcher<br/>(INIT, LOAD, RENDER, BENCHMARK)"]
+        Offscreen["🎨 OffscreenCanvas Context<br/>(Zero-latency Direct Background Blit)"]
     end
 
     subgraph Memory_Layer["🧠 WebAssembly Linear Memory (Shared Heap)"]
-        BaseBuf["📦 Base Image Buffer\n(Unmodified Source RGBA u8)"]
-        CurrBuf["⚡ Working Image Buffer\n(Processed Output RGBA u8)"]
-        LUT["📈 Lookup Tables (LUT)\n(Master/RGB Spline Curves, Gamma, Range Maps)"]
+        BaseBuf["📦 Base Image Buffer<br/>(Unmodified Source RGBA u8)"]
+        CurrBuf["⚡ Working Image Buffer<br/>(Processed Output RGBA u8)"]
+        LUT["📈 Lookup Tables (LUT)<br/>(Master/RGB Spline Curves, Gamma, Range Maps)"]
     end
 
     subgraph Wasm_Core["🦀 Rust WebAssembly Core Engine (cdylib + SIMD128)"]
-        Processor["ImageProcessor\n(Orchestration & State Management)"]
-        SIMDEngine["128-Bit SIMD Vector Engine\n(u8x16, i16x8, f32x4 Intrinsics)"]
-        SplineEngine["Monotone Cubic Spline Engine\n(Fritsch-Carlson 256-LUT Interpolator)"]
-        Filters["Color Kernels\n(Brightness, Contrast, Saturation, Hue, Sepia)"]
-        Convolutions["Spatial & Edge Kernels\n(Bilateral Denoise, USM, Gaussian Blur, Sobel, Sharpen)"]
-        Transforms["Geometric Engine\n(In-Place Flips, 90°/180°/270° Rotations)"]
+        Processor["ImageProcessor<br/>(Orchestration and State Management)"]
+        SIMDEngine["128-Bit SIMD Vector Engine<br/>(u8x16, i16x8, f32x4 Intrinsics)"]
+        SplineEngine["Monotone Cubic Spline Engine<br/>(Fritsch-Carlson 256-LUT Interpolator)"]
+        Filters["Color Kernels<br/>(Brightness, Contrast, Saturation, Hue, Sepia)"]
+        Convolutions["Spatial and Edge Kernels<br/>(Bilateral Denoise, USM, Gaussian Blur, Sobel, Sharpen)"]
+        Transforms["Geometric Engine<br/>(In-Place Flips, 90°/180°/270° Rotations)"]
     end
 
     UI -->|User Input / Gestures| Controller
-    Controller -->|postMessage: LOAD_IMAGE| WorkerRouter
-    Controller -->|postMessage: RENDER(state, curves)| WorkerRouter
+    Controller -->|"postMessage: LOAD_IMAGE"| WorkerRouter
+    Controller -->|"postMessage: RENDER(state, curves)"| WorkerRouter
     
     WorkerRouter --> Processor
     Processor -->|Store Baseline| BaseBuf
@@ -52,11 +52,14 @@ graph TB
     SIMDEngine --> Convolutions
     Processor --> Transforms
     
-    Filters & Convolutions & Transforms -->|Direct In-Place Mutation| CurrBuf
+    Filters -->|Direct In-Place Mutation| CurrBuf
+    Convolutions -->|Direct In-Place Mutation| CurrBuf
+    Transforms -->|Direct In-Place Mutation| CurrBuf
+
     CurrBuf -.->|Zero-Copy Uint8ClampedArray View| Offscreen
     Offscreen -.->|Render Output| UI
     WorkerRouter -->|postMessage: RENDER_COMPLETE| Controller
-    Controller -->|updateHistogram()| HistCanvas
+    Controller -->|"updateHistogram()"| HistCanvas
 ```
 
 ---
