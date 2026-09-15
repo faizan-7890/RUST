@@ -4,6 +4,7 @@ mod convolutions;
 mod transform;
 pub mod simd;
 pub mod masks;
+pub mod lut3d;
 
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::Clamped;
@@ -30,6 +31,8 @@ pub struct ImageProcessor {
     mask_pixels: Vec<u8>,
     mask_enabled: bool,
     use_simd: bool,
+    active_3d_lut: Option<lut3d::Lut3D>,
+    lut_3d_intensity: f32,
 }
 
 #[wasm_bindgen]
@@ -49,6 +52,8 @@ impl ImageProcessor {
             mask_pixels: vec![0u8; mask_size],
             mask_enabled: false,
             use_simd: simd_active,
+            active_3d_lut: None,
+            lut_3d_intensity: 1.0,
         }
     }
 
@@ -335,6 +340,55 @@ impl ImageProcessor {
         std::mem::swap(&mut self.width, &mut self.height);
     }
 
+    // --- 3D LUT Color Grading Engine ---
+
+    /// Parses and loads an Adobe / DaVinci Resolve .cube file into the processor.
+    pub fn load_3d_lut_cube(&mut self, content: &str) -> bool {
+        match lut3d::Lut3D::parse_cube(content) {
+            Ok(lut) => {
+                self.active_3d_lut = Some(lut);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// Sets a procedural film preset ("teal_orange", "kodak_portra", "film_noir").
+    pub fn set_3d_lut_preset(&mut self, preset_name: &str) -> bool {
+        if preset_name.is_empty() || preset_name == "none" {
+            self.active_3d_lut = None;
+            return true;
+        }
+        if let Some(lut) = lut3d::create_film_preset(preset_name) {
+            self.active_3d_lut = Some(lut);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Sets the 3D LUT blend intensity factor [0.0, 1.0].
+    pub fn set_3d_lut_intensity(&mut self, intensity: f32) {
+        self.lut_3d_intensity = intensity.clamp(0.0, 1.0);
+    }
+
+    /// Clears the active 3D LUT.
+    pub fn clear_3d_lut(&mut self) {
+        self.active_3d_lut = None;
+    }
+
+    /// Returns whether a 3D LUT is currently loaded.
+    pub fn has_3d_lut(&self) -> bool {
+        self.active_3d_lut.is_some()
+    }
+
+    /// Applies the active 3D LUT to the current pixel buffer.
+    pub fn apply_active_3d_lut(&mut self, intensity: f32) {
+        if let Some(ref lut) = self.active_3d_lut {
+            lut3d::apply_3d_lut(&mut self.current_pixels, lut, intensity);
+        }
+    }
+
     /// Unified high-speed filter pipeline: resets to base image and applies
     /// interactive parameters, tone curve LUTs, and optional SIMD acceleration.
     pub fn apply_pipeline(
@@ -405,6 +459,13 @@ impl ImageProcessor {
         }
         if vignette_intensity > 0.01 {
             filters::apply_vignette(&mut self.current_pixels, self.width, self.height, 1.2, vignette_intensity);
+        }
+
+        // 2b. Cinematic 3D Look-Up Table (LUT)
+        if let Some(ref lut) = self.active_3d_lut {
+            if self.lut_3d_intensity > 0.001 {
+                lut3d::apply_3d_lut(&mut self.current_pixels, lut, self.lut_3d_intensity);
+            }
         }
 
         // 3. Edge-Preserving Denoising & Spatial Convolutions
