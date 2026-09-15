@@ -682,3 +682,36 @@ input[type="range"]::-webkit-slider-thumb {
   color: #fff;
 }
 
+/* 3D LUT (.CUBE) Styles */
+.preset-pill.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #000;
+  font-weight: 600;
+}
+
+.lut-upload-box {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.badge-micro.active-lut {
+  background: rgba(56, 189, 248, 0.2);
+  color: #38bdf8;
+  border-color: #38bdf8;
+}
+
+.w-full {
+  width: 100%;
+}
+
+.mt-1 {
+  margin-top: 4px;
+}
+
+.mb-2 {
+  margin-bottom: 8px;
+}
+
