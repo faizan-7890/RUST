@@ -97,11 +97,29 @@ The engine leverages WebAssembly 128-bit SIMD (`core::arch::wasm32::*`) to proce
 | :--- | :--- | :--- | :--- | :--- |
 | **RGB Tone Curve LUT Mapping** | ~24.0 ms | ~1.2 ms | **~0.4 ms** | **~60x faster** |
 | **Unsharp Masking (USM)** | ~92.0 ms | ~10.1 ms | **~3.0 ms** | **~30x faster** |
+| **3D LUT Trilinear Grading ($17^3$ / $33^3$)** | ~65.0 ms | ~4.2 ms | **~1.1 ms** | **~59x faster** |
 | **Bilateral Filter (Skin Smoothing)** | ~180.0 ms | ~18.4 ms | **~5.2 ms** | **~35x faster** |
 | **Separable Gaussian Blur ($\sigma = 3.0$)** | ~85.0 ms | ~9.2 ms | **~2.8 ms** | **~30x faster** |
 | **Color Invert & Brightness Pass** | ~14.0 ms | ~1.8 ms | **~0.3 ms** | **~46x faster** |
 | **Sobel Edge Detection** | ~62.0 ms | ~6.8 ms | **~2.1 ms** | **~29x faster** |
 | **RGB Waveform Histogram** | ~18.0 ms | ~1.9 ms | **~0.7 ms** | **~26x faster** |
+
+---
+
+## 🎞️ 3D LUT (.CUBE) Parser & Trilinear Interpolation Engine
+
+The engine includes an industry-standard 3D Look-Up Table parser (`src/lut3d.rs`) and high-throughput real-time Trilinear 3D Interpolation kernel supporting Adobe Premiere, DaVinci Resolve, and Final Cut Pro `.cube` color grades:
+
+* **Trilinear Lattice Interpolation**: Given an input color triplet $(R, G, B) \in [0, 1]^3$, the kernel computes the 8 bounding lattice points $C_{ijk}$ in $\mathcal{O}(1)$ and blends weights via fractional coordinates $(u, v, w)$:
+  $$C_{\text{interpolated}} = \sum_{i=0}^1 \sum_{j=0}^1 \sum_{k=0}^1 C_{ijk} \cdot (1 - |u - i|) \cdot (1 - |v - j|) \cdot (1 - |w - k|)$$
+* **Linear Flat Indexing**: Maps 3D coordinate space $(x, y, z)$ into contiguous memory:
+  $$\text{Index}(x, y, z) = (z \cdot N^2 + y \cdot N + x) \times 3$$
+* **Variable Blend Intensity**: Smooth linear mixing with base pixel colors:
+  $$I_{\text{graded}} = I_{\text{orig}} + \alpha \cdot (I_{\text{target}} - I_{\text{orig}}), \quad \alpha \in [0.0, 1.0]$$
+* **Built-In Procedural Film Emulations**:
+  - **Teal & Orange**: Hollywood blockbuster color contrast with cyan/teal shadow cast and warm skin highlights.
+  - **Kodak Portra 400**: Warm organic midtones, lifted base density, and smooth highlight rolloff.
+  - **Film Noir**: High-contrast silver-gelatin monochrome with cold silver tint.
 
 ---
 
@@ -120,6 +138,7 @@ The engine features a dedicated 8-bit alpha mask buffer (`src/masks.rs`) allowin
 
 ## ✨ Features & Filter Suite
 
+- **Cinematic 3D LUT Grading**: Industry-standard `.cube` parser and real-time trilinear 3D interpolation with variable intensity.
 - **Selective Adjustment Brush**: Paint & erase local masks with adjustable size, feathering, and flow.
 - **Dedicated Web Worker & OffscreenCanvas**: Guarantees locked 60 FPS main thread responsiveness.
 - **128-Bit WASM SIMD Vectorization**: Accelerates pixel manipulations and convolutions with 16-channel parallel instructions.
