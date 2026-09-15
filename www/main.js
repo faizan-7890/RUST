@@ -62,6 +62,11 @@ const state = {
   unsharpRadius: 1.0,
   bilateralSpatial: 0.0,
   bilateralRange: 30.0,
+  lut3dPreset: "none",
+  lut3dIntensity: 1.0,
+  lut3dActive: false,
+  lut3dCustomLoaded: false,
+  lut3dCustomName: null,
   simdEnabled: true,
   workerEnabled: true,
   sepia: false,
@@ -118,6 +123,12 @@ const els = {
   toggleMaskOverlay: document.getElementById("toggleMaskOverlay"),
   btnClearMask: document.getElementById("btnClearMask"),
   btnInvertMask: document.getElementById("btnInvertMask"),
+  // 3D LUT Elements
+  lut3dStatusBadge: document.getElementById("lut3dStatusBadge"),
+  sliderLutIntensity: document.getElementById("sliderLutIntensity"),
+  valLutIntensity: document.getElementById("valLutIntensity"),
+  lutUpload: document.getElementById("lutUpload"),
+  btnClearLut: document.getElementById("btnClearLut"),
   // Tone Curve Elements
   curveSvg: document.getElementById("curveSvg"),
   curvePath: document.getElementById("curvePath"),
@@ -128,26 +139,6 @@ const els = {
   sliderContrast: document.getElementById("sliderContrast"),
   valContrast: document.getElementById("valContrast"),
   sliderSaturation: document.getElementById("sliderSaturation"),
-  valSaturation: document.getElementById("valSaturation"),
-  sliderHue: document.getElementById("sliderHue"),
-  valHue: document.getElementById("valHue"),
-  sliderGamma: document.getElementById("sliderGamma"),
-  valGamma: document.getElementById("valGamma"),
-  sliderVignette: document.getElementById("sliderVignette"),
-  valVignette: document.getElementById("valVignette"),
-  sliderBlur: document.getElementById("sliderBlur"),
-  valBlur: document.getElementById("valBlur"),
-  sliderSharpen: document.getElementById("sliderSharpen"),
-  valSharpen: document.getElementById("valSharpen"),
-  sliderUnsharpAmount: document.getElementById("sliderUnsharpAmount"),
-  valUnsharpAmount: document.getElementById("valUnsharpAmount"),
-  sliderUnsharpRadius: document.getElementById("sliderUnsharpRadius"),
-  valUnsharpRadius: document.getElementById("valUnsharpRadius"),
-  sliderBilateralSpatial: document.getElementById("sliderBilateralSpatial"),
-  valBilateralSpatial: document.getElementById("valBilateralSpatial"),
-  sliderBilateralRange: document.getElementById("sliderBilateralRange"),
-  valBilateralRange: document.getElementById("valBilateralRange"),
-};
   valSaturation: document.getElementById("valSaturation"),
   sliderHue: document.getElementById("sliderHue"),
   valHue: document.getElementById("valHue"),
@@ -253,6 +244,14 @@ function initWorker() {
       } else if (type === "MASK_CLEARED") {
         updateMaskStatus(false);
         if (maskCtx && maskCanvas) maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+        requestRender();
+      } else if (type === "3D_LUT_LOADED") {
+        if (e.data.success) {
+          requestRender();
+        } else {
+          alert("Failed to parse .cube LUT file in Web Worker.");
+        }
+      } else if (type === "3D_LUT_PRESET_SET" || type === "3D_LUT_CLEARED") {
         requestRender();
       }
     };
@@ -457,6 +456,12 @@ function applyFilters() {
     const t0 = performance.now();
 
     mainThreadProcessor.set_simd_enabled(state.simdEnabled);
+    if (state.lut3dIntensity !== undefined) {
+      mainThreadProcessor.set_3d_lut_intensity(state.lut3dIntensity);
+    }
+    if (state.lut3dPreset !== undefined && state.lut3dPreset !== null) {
+      mainThreadProcessor.set_3d_lut_preset(state.lut3dPreset);
+    }
     mainThreadProcessor.apply_pipeline(
       state.brightness,
       state.contrast,
@@ -974,10 +979,132 @@ function setupEventListeners() {
     }
   });
 
+  // 3D LUT File Loading & Preset Selection
+  function loadCubeContent(content, filename = "Custom .CUBE") {
+    if (state.workerEnabled && worker && workerReady) {
+      worker.postMessage({ type: "LOAD_3D_LUT", payload: { content } });
+    } else if (mainThreadProcessor) {
+      const success = mainThreadProcessor.load_3d_lut_cube(content);
+      if (!success) {
+        alert("Failed to parse .cube LUT file.");
+        return;
+      }
+    }
+    state.lut3dActive = true;
+    state.lut3dCustomLoaded = true;
+    state.lut3dPreset = null;
+    state.lut3dCustomName = filename;
+
+    document.querySelectorAll("[data-lut]").forEach((b) => b.classList.remove("active"));
+    if (els.lut3dStatusBadge) {
+      els.lut3dStatusBadge.textContent = filename.replace(/\.cube$/i, "");
+      els.lut3dStatusBadge.classList.add("active-lut");
+    }
+    if (els.btnClearLut) {
+      els.btnClearLut.style.display = "block";
+      els.btnClearLut.textContent = `Clear ${filename}`;
+    }
+    requestRender();
+  }
+
+  // 3D LUT Preset Pills
+  document.querySelectorAll("[data-lut]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll("[data-lut]").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      const lut = btn.dataset.lut;
+      state.lut3dPreset = lut;
+      state.lut3dCustomLoaded = false;
+      if (els.btnClearLut) els.btnClearLut.style.display = "none";
+
+      if (lut === "none") {
+        state.lut3dActive = false;
+        if (els.lut3dStatusBadge) {
+          els.lut3dStatusBadge.textContent = "Inactive";
+          els.lut3dStatusBadge.classList.remove("active-lut");
+        }
+        if (state.workerEnabled && worker && workerReady) {
+          worker.postMessage({ type: "CLEAR_3D_LUT" });
+        } else if (mainThreadProcessor) {
+          mainThreadProcessor.clear_3d_lut();
+        }
+      } else {
+        state.lut3dActive = true;
+        if (els.lut3dStatusBadge) {
+          els.lut3dStatusBadge.textContent = btn.textContent;
+          els.lut3dStatusBadge.classList.add("active-lut");
+        }
+        if (state.workerEnabled && worker && workerReady) {
+          worker.postMessage({ type: "SET_3D_LUT_PRESET", payload: { preset: lut } });
+        } else if (mainThreadProcessor) {
+          mainThreadProcessor.set_3d_lut_preset(lut);
+        }
+      }
+      requestRender();
+    });
+  });
+
+  // 3D LUT Intensity Slider
+  if (els.sliderLutIntensity) {
+    els.sliderLutIntensity.addEventListener("input", (e) => {
+      const val = parseFloat(e.target.value);
+      state.lut3dIntensity = val;
+      if (els.valLutIntensity) els.valLutIntensity.textContent = `${Math.round(val * 100)}%`;
+      if (state.workerEnabled && worker && workerReady) {
+        worker.postMessage({ type: "SET_3D_LUT_INTENSITY", payload: { intensity: val } });
+      } else if (mainThreadProcessor) {
+        mainThreadProcessor.set_3d_lut_intensity(val);
+      }
+      requestRender();
+    });
+  }
+
+  // 3D LUT Upload
+  if (els.lutUpload) {
+    els.lutUpload.addEventListener("change", (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (evt) => {
+        loadCubeContent(evt.target.result, file.name);
+      };
+      reader.readAsText(file);
+      e.target.value = "";
+    });
+  }
+
+  // 3D LUT Clear Button
+  if (els.btnClearLut) {
+    els.btnClearLut.addEventListener("click", () => {
+      state.lut3dActive = false;
+      state.lut3dCustomLoaded = false;
+      state.lut3dPreset = "none";
+      state.lut3dCustomName = null;
+      els.btnClearLut.style.display = "none";
+
+      const noneBtn = document.querySelector('[data-lut="none"]');
+      if (noneBtn) {
+        document.querySelectorAll("[data-lut]").forEach((b) => b.classList.remove("active"));
+        noneBtn.classList.add("active");
+      }
+      if (els.lut3dStatusBadge) {
+        els.lut3dStatusBadge.textContent = "Inactive";
+        els.lut3dStatusBadge.classList.remove("active-lut");
+      }
+      if (state.workerEnabled && worker && workerReady) {
+        worker.postMessage({ type: "CLEAR_3D_LUT" });
+      } else if (mainThreadProcessor) {
+        mainThreadProcessor.clear_3d_lut();
+      }
+      requestRender();
+    });
+  }
+
   // Presets
-  document.querySelectorAll(".preset-pill").forEach((btn) => {
+  document.querySelectorAll("[data-preset]").forEach((btn) => {
     btn.addEventListener("click", () => {
       const p = btn.dataset.preset;
+      if (!p) return;
       resetState();
       switch (p) {
         case "s-curve":
@@ -1076,8 +1203,14 @@ function setupEventListeners() {
     e.preventDefault();
     els.dropZone.classList.remove("drag-hover");
     const file = e.dataTransfer.files[0];
-    if (file && file.type.startsWith("image/")) {
-      handleImageFile(file);
+    if (file) {
+      if (file.name.endsWith(".cube") || file.name.endsWith(".3dl")) {
+        const reader = new FileReader();
+        reader.onload = (evt) => loadCubeContent(evt.target.result, file.name);
+        reader.readAsText(file);
+      } else if (file.type.startsWith("image/")) {
+        handleImageFile(file);
+      }
     }
   });
 
@@ -1120,6 +1253,11 @@ function resetState() {
   state.unsharpRadius = 1.0;
   state.bilateralSpatial = 0.0;
   state.bilateralRange = 30.0;
+  state.lut3dPreset = "none";
+  state.lut3dIntensity = 1.0;
+  state.lut3dActive = false;
+  state.lut3dCustomLoaded = false;
+  state.lut3dCustomName = null;
   state.sepia = false;
   state.invert = false;
   state.grayscale = false;
@@ -1155,6 +1293,21 @@ function syncControls() {
   els.valBilateralSpatial.textContent = state.bilateralSpatial;
   els.sliderBilateralRange.value = state.bilateralRange;
   els.valBilateralRange.textContent = state.bilateralRange;
+
+  if (els.sliderLutIntensity) {
+    els.sliderLutIntensity.value = state.lut3dIntensity;
+    if (els.valLutIntensity) els.valLutIntensity.textContent = `${Math.round(state.lut3dIntensity * 100)}%`;
+  }
+  if (els.lut3dStatusBadge) {
+    els.lut3dStatusBadge.textContent = state.lut3dActive ? (state.lut3dCustomName || state.lut3dPreset) : "Inactive";
+    els.lut3dStatusBadge.classList.toggle("active-lut", state.lut3dActive);
+  }
+  document.querySelectorAll("[data-lut]").forEach((b) => {
+    b.classList.toggle("active", b.dataset.lut === state.lut3dPreset);
+  });
+  if (els.btnClearLut) {
+    els.btnClearLut.style.display = state.lut3dCustomLoaded ? "block" : "none";
+  }
 
   if (els.toggleSimd) els.toggleSimd.checked = state.simdEnabled;
   if (els.toggleWorker) els.toggleWorker.checked = state.workerEnabled;
