@@ -259,3 +259,13 @@ pub fn apply_3d_lut(buffer: &mut [u8], lut: &Lut3D, intensity: f32) {
         chunk[2] = final_b.clamp(0.0, 255.0) as u8;
     }
 }
+
+/// Factory function to construct procedural film preset by identifier.
+pub fn create_film_preset(name: &str) -> Option<Lut3D> {
+    match name.to_lowercase().as_str() {
+        "teal_orange" | "teal-orange" | "teal & orange" | "teal_and_orange" => Some(Lut3D::preset_teal_orange()),
+        "kodak_portra" | "kodak-portra" | "portra" | "kodak portra 400" => Some(Lut3D::preset_kodak_portra()),
+        "film_noir" | "film-noir" | "noir" | "film noir" => Some(Lut3D::preset_film_noir()),
+        _ => None,
+    }
+}
