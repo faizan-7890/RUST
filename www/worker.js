@@ -88,6 +88,12 @@ self.onmessage = async (e) => {
       }
 
       processor.set_simd_enabled(state.simdEnabled ?? useSimd);
+      if (state.lut3dIntensity !== undefined) {
+        processor.set_3d_lut_intensity(state.lut3dIntensity);
+      }
+      if (state.lut3dPreset !== undefined && state.lut3dPreset !== null) {
+        processor.set_3d_lut_preset(state.lut3dPreset);
+      }
       processor.apply_pipeline(
         state.brightness,
         state.contrast,
@@ -209,6 +215,36 @@ self.onmessage = async (e) => {
       if (!processor) return;
       processor.set_mask_enabled(payload.enabled);
       self.postMessage({ type: "MASK_TOGGLED", enabled: payload.enabled });
+      break;
+    }
+
+    case "LOAD_3D_LUT": {
+      if (!processor) return;
+      const { content } = payload;
+      const success = processor.load_3d_lut_cube(content);
+      self.postMessage({ type: "3D_LUT_LOADED", success });
+      break;
+    }
+
+    case "SET_3D_LUT_PRESET": {
+      if (!processor) return;
+      const { preset } = payload;
+      const success = processor.set_3d_lut_preset(preset);
+      self.postMessage({ type: "3D_LUT_PRESET_SET", preset, success });
+      break;
+    }
+
+    case "SET_3D_LUT_INTENSITY": {
+      if (!processor) return;
+      const { intensity } = payload;
+      processor.set_3d_lut_intensity(intensity);
+      break;
+    }
+
+    case "CLEAR_3D_LUT": {
+      if (!processor) return;
+      processor.clear_3d_lut();
+      self.postMessage({ type: "3D_LUT_CLEARED" });
       break;
     }
 
