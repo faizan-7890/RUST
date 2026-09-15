@@ -158,3 +158,36 @@ flowchart LR
     Math --> Out
 ```
 
+---
+
+## 6. 3D LUT Trilinear Interpolation Dataflow
+
+```mermaid
+flowchart TD
+    subgraph Color_Input["Input Pixel Color Triplet"]
+        RGB["[R, G, B] in [0.0, 1.0]"]
+    end
+
+    subgraph Lattice_Lookup["3D Coordinate Scaling and Vertex Indexing"]
+        Scale["Scale by (N - 1) to (x, y, z)"]
+        Vertices["8 Bounding Cube Vertices:<br/>C000, C100, C010, C110, C001, C101, C011, C111"]
+        Weights["Weights from Fractional Coordinates:<br/>u = x - floor(x), v = y - floor(y), w = z - floor(z)"]
+    end
+
+    subgraph Interpolation["Trilinear Weight Accumulation"]
+        Lerp["C_target = Sum(C_ijk * w_ijk)"]
+    end
+
+    subgraph Blending["Alpha Blend Intensity Factor"]
+        Blend["C_final = C_orig + alpha * (C_target - C_orig)"]
+    end
+
+    RGB --> Scale
+    Scale --> Vertices
+    Scale --> Weights
+    Vertices --> Lerp
+    Weights --> Lerp
+    Lerp --> Blend
+```
+
+
