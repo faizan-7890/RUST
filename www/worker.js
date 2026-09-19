@@ -113,7 +113,10 @@ self.onmessage = async (e) => {
         luts.master,
         luts.r,
         luts.g,
-        luts.b
+        luts.b,
+        state.lensK1 ?? 0,
+        state.chromaticAberration ?? 0,
+        state.caAngle ?? 0
       );
 
       const t1 = performance.now();
@@ -166,7 +169,8 @@ self.onmessage = async (e) => {
           state.brightness, state.contrast, state.saturation, state.hue, state.gamma,
           state.blur, state.sharpen, state.unsharpAmount, state.unsharpRadius,
           state.bilateralSpatial, state.bilateralRange, state.sepia, state.invert,
-          state.grayscale, state.vignette, luts.master, luts.r, luts.g, luts.b
+          state.grayscale, state.vignette, luts.master, luts.r, luts.g, luts.b,
+          state.lensK1 ?? 0, state.chromaticAberration ?? 0, state.caAngle ?? 0
         );
       }
 
@@ -245,6 +249,14 @@ self.onmessage = async (e) => {
       if (!processor) return;
       processor.clear_3d_lut();
       self.postMessage({ type: "3D_LUT_CLEARED" });
+      break;
+    }
+
+    case "LENS_OPTICS": {
+      if (!processor) return;
+      const { k1, k2, caAmount, caAngle } = payload;
+      processor.lens_optics(k1 ?? 0, k2 ?? 0, caAmount ?? 0, caAngle ?? 0);
+      self.postMessage({ type: "LENS_OPTICS_APPLIED" });
       break;
     }
 
