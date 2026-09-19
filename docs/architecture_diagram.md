@@ -33,6 +33,8 @@ flowchart TD
         Processor["ImageProcessor<br/>(Orchestration and State Management)"]
         SIMDEngine["128-Bit SIMD Vector Engine<br/>(u8x16, i16x8, f32x4 Intrinsics)"]
         SplineEngine["Monotone Cubic Spline Engine<br/>(Fritsch-Carlson 256-LUT Interpolator)"]
+        LUT3DEngine["3D LUT Grading Engine<br/>(.CUBE Parser & Trilinear Interpolator)"]
+        LensEngine["Lens Optics & Dispersion Engine<br/>(Brown-Conrady Radial Warping & Lateral CA)"]
         Filters["Color Kernels<br/>(Brightness, Contrast, Saturation, Hue, Sepia)"]
         Convolutions["Spatial and Edge Kernels<br/>(Bilateral Denoise, USM, Gaussian Blur, Sobel, Sharpen)"]
         Transforms["Geometric Engine<br/>(In-Place Flips, 90°/180°/270° Rotations)"]
@@ -50,10 +52,14 @@ flowchart TD
     Processor --> SIMDEngine
     SIMDEngine --> Filters
     SIMDEngine --> Convolutions
+    Processor --> LUT3DEngine
+    Processor --> LensEngine
     Processor --> Transforms
     
     Filters -->|Direct In-Place Mutation| CurrBuf
     Convolutions -->|Direct In-Place Mutation| CurrBuf
+    LUT3DEngine -->|Direct In-Place Mutation| CurrBuf
+    LensEngine -->|Direct In-Place Mutation| CurrBuf
     Transforms -->|Direct In-Place Mutation| CurrBuf
 
     CurrBuf -.->|Zero-Copy Uint8ClampedArray View| Offscreen
@@ -132,6 +138,7 @@ flowchart TD
 | **Separable Gaussian Blur ($\sigma = 3.0$)** | ~85.4 ms | ~9.2 ms | **~2.8 ms** | **~30x faster** |
 | **Color Invert & Brightness Pass** | ~14.0 ms | ~1.8 ms | **~0.3 ms** | **~46x faster** |
 | **Sobel Edge Detection** | ~62.1 ms | ~6.8 ms | **~2.1 ms** | **~29x faster** |
+| **Lens Optics & Chromatic Dispersion** | ~145.0 ms | ~15.2 ms | **~4.5 ms** | **~32x faster** |
 | **RGB Waveform Histogram** | ~18.5 ms | ~1.9 ms | **~0.7 ms** | **~26x faster** |
 
 ---
@@ -188,6 +195,46 @@ flowchart TD
     Vertices --> Lerp
     Weights --> Lerp
     Lerp --> Blend
+```
+
+---
+
+## 7. Lens Optics & Chromatic Aberration Pipeline
+
+```mermaid
+flowchart TD
+    subgraph Target_Pixel["Target Pixel Coordinate (x, y)"]
+        Dest["Normalize to Center:<br/>dx = (x - x_mid) / r_max<br/>dy = (y - y_mid) / r_max<br/>r² = dx² + dy²"]
+    end
+
+    subgraph Distortion_Model["Brown-Conrady Radial Warping"]
+        RadDist["Distortion Factor:<br/>D_rad = 1 + k₁ r² + k₂ r⁴"]
+        BaseCoord["Base Source Coordinate:<br/>xs = x_mid + (x - x_mid) · D_rad<br/>ys = y_mid + (y - y_mid) · D_rad"]
+    end
+
+    subgraph Dispersion_Model["Lateral Chromatic Aberration & Prism Angle"]
+        CA_Factors["Wavelength Scale:<br/>R_scale = D_rad + k_ca · r²<br/>B_scale = D_rad - k_ca · r²"]
+        Prism["Prism Angle Vector:<br/>Δx_θ = k_ca · r_max · cos(θ)<br/>Δy_θ = k_ca · r_max · sin(θ)"]
+        Coords["Multi-Spectral Sample Coords:<br/>(xs_R, ys_R) = Base + Δ_R<br/>(xs_G, ys_G) = Base<br/>(xs_B, ys_B) = Base - Δ_B"]
+    end
+
+    subgraph Sampling["Sub-Pixel Bilinear Interpolator"]
+        BilinearR["Sample Red Channel with Bilinear Clamp"]
+        BilinearG["Sample Green Channel with Bilinear Clamp"]
+        BilinearB["Sample Blue Channel with Bilinear Clamp"]
+    end
+
+    subgraph Output["Output Working Buffer"]
+        PixelOut["Composited Pixel: [R_sampled, G_sampled, B_sampled, A_orig]"]
+    end
+
+    Dest --> RadDist
+    RadDist --> BaseCoord
+    BaseCoord --> CA_Factors
+    Prism --> CA_Factors
+    CA_Factors --> Coords
+    Coords --> BilinearR & BilinearG & BilinearB
+    BilinearR & BilinearG & BilinearB --> PixelOut
 ```
 
 
