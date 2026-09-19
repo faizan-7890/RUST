@@ -5,6 +5,7 @@ mod transform;
 pub mod simd;
 pub mod masks;
 pub mod lut3d;
+pub mod lens;
 
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::Clamped;
@@ -389,6 +390,23 @@ impl ImageProcessor {
         }
     }
 
+    // --- Lens Optics & Chromatic Dispersion Engine ---
+
+    /// Applies radial barrel (k1 < 0) or pincushion (k1 > 0) distortion.
+    pub fn lens_distortion(&mut self, k1: f32, k2: f32) {
+        lens::apply_lens_optics_in_place(&mut self.current_pixels, self.width, self.height, k1, k2, 0.0, 0.0);
+    }
+
+    /// Applies lateral chromatic aberration with wavelength dispersion and prism angle offset.
+    pub fn chromatic_aberration(&mut self, amount: f32, angle_deg: f32) {
+        lens::apply_lens_optics_in_place(&mut self.current_pixels, self.width, self.height, 0.0, 0.0, amount, angle_deg);
+    }
+
+    /// Applies combined Brown-Conrady radial lens distortion and chromatic aberration in a single pass.
+    pub fn lens_optics(&mut self, k1: f32, k2: f32, ca_amount: f32, ca_angle_deg: f32) {
+        lens::apply_lens_optics_in_place(&mut self.current_pixels, self.width, self.height, k1, k2, ca_amount, ca_angle_deg);
+    }
+
     /// Unified high-speed filter pipeline: resets to base image and applies
     /// interactive parameters, tone curve LUTs, and optional SIMD acceleration.
     pub fn apply_pipeline(
@@ -412,6 +430,9 @@ impl ImageProcessor {
         r_lut: &[u8],
         g_lut: &[u8],
         b_lut: &[u8],
+        lens_k1: f32,
+        ca_amount: f32,
+        ca_angle_deg: f32,
     ) {
         self.reset_to_base();
 
@@ -488,6 +509,19 @@ impl ImageProcessor {
             } else {
                 convolutions::apply_unsharp_mask(&mut self.current_pixels, self.width, self.height, unsharp_radius, unsharp_amount, 2);
             }
+        }
+
+        // 3b. Lens Optics & Chromatic Aberration
+        if lens_k1.abs() > 0.0001 || ca_amount.abs() > 0.0001 {
+            lens::apply_lens_optics_in_place(
+                &mut self.current_pixels,
+                self.width,
+                self.height,
+                lens_k1,
+                0.0,
+                ca_amount,
+                ca_angle_deg,
+            );
         }
 
         // 4. Selective Mask Alpha Blending (if active)
