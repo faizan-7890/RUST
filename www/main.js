@@ -67,6 +67,9 @@ const state = {
   lut3dActive: false,
   lut3dCustomLoaded: false,
   lut3dCustomName: null,
+  lensK1: 0.0,
+  chromaticAberration: 0.0,
+  caAngle: 0.0,
   simdEnabled: true,
   workerEnabled: true,
   sepia: false,
@@ -158,6 +161,18 @@ const els = {
   valBilateralSpatial: document.getElementById("valBilateralSpatial"),
   sliderBilateralRange: document.getElementById("sliderBilateralRange"),
   valBilateralRange: document.getElementById("valBilateralRange"),
+  // Lens Optics & Chromatic Aberration Elements
+  btnResetOptics: document.getElementById("btnResetOptics"),
+  opticsFisheye: document.getElementById("opticsFisheye"),
+  opticsPincushion: document.getElementById("opticsPincushion"),
+  opticsAnamorphic: document.getElementById("opticsAnamorphic"),
+  opticsRetroLens: document.getElementById("opticsRetroLens"),
+  sliderLensDistortion: document.getElementById("sliderLensDistortion"),
+  valLensDistortion: document.getElementById("valLensDistortion"),
+  sliderChromaticAberration: document.getElementById("sliderChromaticAberration"),
+  valChromaticAberration: document.getElementById("valChromaticAberration"),
+  sliderCaAngle: document.getElementById("sliderCaAngle"),
+  valCaAngle: document.getElementById("valCaAngle"),
 };
 
 // 1. Live UI FPS Meter
@@ -481,7 +496,10 @@ function applyFilters() {
       luts.master,
       luts.r,
       luts.g,
-      luts.b
+      luts.b,
+      state.lensK1,
+      state.chromaticAberration,
+      state.caAngle
     );
 
     const pixelPtr = mainThreadProcessor.pixel_ptr();
@@ -913,6 +931,58 @@ function setupEventListeners() {
   bindSlider(els.sliderBilateralSpatial, els.valBilateralSpatial, "bilateralSpatial");
   bindSlider(els.sliderBilateralRange, els.valBilateralRange, "bilateralRange");
 
+  // Lens Optics & Chromatic Aberration Sliders
+  bindSlider(els.sliderLensDistortion, els.valLensDistortion, "lensK1");
+  bindSlider(els.sliderChromaticAberration, els.valChromaticAberration, "chromaticAberration");
+  bindSlider(els.sliderCaAngle, els.valCaAngle, "caAngle", "°");
+
+  // Lens Optics Presets
+  if (els.opticsFisheye) {
+    els.opticsFisheye.addEventListener("click", () => {
+      state.lensK1 = -0.25;
+      state.chromaticAberration = 0.008;
+      state.caAngle = 0.0;
+      syncControls();
+      requestRender();
+    });
+  }
+  if (els.opticsPincushion) {
+    els.opticsPincushion.addEventListener("click", () => {
+      state.lensK1 = 0.22;
+      state.chromaticAberration = 0.004;
+      state.caAngle = 0.0;
+      syncControls();
+      requestRender();
+    });
+  }
+  if (els.opticsAnamorphic) {
+    els.opticsAnamorphic.addEventListener("click", () => {
+      state.lensK1 = -0.06;
+      state.chromaticAberration = 0.015;
+      state.caAngle = 90.0;
+      syncControls();
+      requestRender();
+    });
+  }
+  if (els.opticsRetroLens) {
+    els.opticsRetroLens.addEventListener("click", () => {
+      state.lensK1 = -0.15;
+      state.chromaticAberration = 0.020;
+      state.caAngle = 45.0;
+      syncControls();
+      requestRender();
+    });
+  }
+  if (els.btnResetOptics) {
+    els.btnResetOptics.addEventListener("click", () => {
+      state.lensK1 = 0.0;
+      state.chromaticAberration = 0.0;
+      state.caAngle = 0.0;
+      syncControls();
+      requestRender();
+    });
+  }
+
   // Toggles
   const bindToggle = (btn, key) => {
     if (!btn) return;
@@ -1261,6 +1331,9 @@ function resetState() {
   state.sepia = false;
   state.invert = false;
   state.grayscale = false;
+  state.lensK1 = 0.0;
+  state.chromaticAberration = 0.0;
+  state.caAngle = 0.0;
 
   curves.master = [{ x: 0, y: 0 }, { x: 255, y: 255 }];
   curves.r = [{ x: 0, y: 0 }, { x: 255, y: 255 }];
@@ -1293,6 +1366,19 @@ function syncControls() {
   els.valBilateralSpatial.textContent = state.bilateralSpatial;
   els.sliderBilateralRange.value = state.bilateralRange;
   els.valBilateralRange.textContent = state.bilateralRange;
+
+  if (els.sliderLensDistortion) {
+    els.sliderLensDistortion.value = state.lensK1;
+    if (els.valLensDistortion) els.valLensDistortion.textContent = state.lensK1.toFixed(2);
+  }
+  if (els.sliderChromaticAberration) {
+    els.sliderChromaticAberration.value = state.chromaticAberration;
+    if (els.valChromaticAberration) els.valChromaticAberration.textContent = state.chromaticAberration.toFixed(3);
+  }
+  if (els.sliderCaAngle) {
+    els.sliderCaAngle.value = state.caAngle;
+    if (els.valCaAngle) els.valCaAngle.textContent = `${Math.round(state.caAngle)}°`;
+  }
 
   if (els.sliderLutIntensity) {
     els.sliderLutIntensity.value = state.lut3dIntensity;
