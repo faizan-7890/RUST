@@ -59,6 +59,9 @@
             <button class="btn-tool" id="btnBenchmark">⚡ Benchmark (JS vs Scalar vs SIMD)</button>
           </div>
           <div class="tool-group">
+            <button class="btn-tool" id="btnUndo" title="Undo (Ctrl+Z)" disabled>↩️ Undo</button>
+            <button class="btn-tool" id="btnRedo" title="Redo (Ctrl+Y / Ctrl+Shift+Z)" disabled>↪️ Redo</button>
+            <span class="badge-micro" id="historyBadge" title="History Ring Buffer Position">1 / 1</span>
             <button class="btn-tool" id="btnToggleBrush" title="Toggle Selective Adjustment Brush">🖌️ Brush Mask</button>
             <button class="btn-tool" id="btnFlipH" title="Flip Horizontal">↔️ Flip H</button>
             <button class="btn-tool" id="btnFlipV" title="Flip Vertical">↕️ Flip V</button>
@@ -132,6 +135,17 @@
               <input type="checkbox" id="toggleSimd" checked>
               <span>⚡ WASM SIMD128 Vector Acceleration</span>
             </label>
+          </div>
+        </div>
+
+        <!-- In-Wasm Action History Timeline -->
+        <div class="sidebar-group">
+          <div class="flex-between">
+            <h3 class="group-heading no-border">History Timeline</h3>
+            <span class="badge-micro" id="historyStateBadge">Original Image</span>
+          </div>
+          <div class="history-list" id="historyList">
+            <div class="history-empty text-muted">No history steps recorded</div>
           </div>
         </div>
 
