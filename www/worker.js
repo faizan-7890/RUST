@@ -24,6 +24,57 @@ function updateChannelLut(pts, channel) {
   }
 }
 
+function postHistoryState() {
+  if (!processor) return;
+  self.postMessage({
+    type: "HISTORY_UPDATED",
+    canUndo: processor.can_undo(),
+    canRedo: processor.can_redo(),
+    count: processor.history_count(),
+    cursor: processor.history_cursor(),
+    historyJson: processor.history_json()
+  });
+}
+
+function sendRestoredState() {
+  if (!processor) return;
+  const width = processor.width();
+  const height = processor.height();
+  const hist = processor.get_histogram();
+  const maskBytes = processor.get_mask();
+  const transferables = [maskBytes.buffer];
+  let pixelsBuffer = null;
+
+  if (offscreenCanvas && offscreenCtx) {
+    offscreenCanvas.width = width;
+    offscreenCanvas.height = height;
+    const pixelPtr = processor.pixel_ptr();
+    const pixelLen = processor.pixel_len();
+    const wasmMemory = new Uint8ClampedArray(wasmModule.memory.buffer, pixelPtr, pixelLen);
+    const imgData = new ImageData(wasmMemory, width, height);
+    offscreenCtx.putImageData(imgData, 0, 0);
+  } else {
+    const pixels = processor.get_pixels();
+    pixelsBuffer = pixels.buffer;
+    transferables.push(pixelsBuffer);
+  }
+
+  self.postMessage({
+    type: "HISTORY_RESTORED",
+    width,
+    height,
+    pixels: pixelsBuffer,
+    histogram: Array.from(hist),
+    hasActiveMask: processor.is_mask_enabled(),
+    mask: maskBytes.buffer,
+    canUndo: processor.can_undo(),
+    canRedo: processor.can_redo(),
+    count: processor.history_count(),
+    cursor: processor.history_cursor(),
+    historyJson: processor.history_json()
+  }, transferables);
+}
+
 self.onmessage = async (e) => {
   const { type, payload } = e.data;
 
@@ -70,6 +121,7 @@ self.onmessage = async (e) => {
         height,
         histogram: Array.from(processor.get_histogram())
       });
+      postHistoryState();
       break;
     }
 
@@ -263,15 +315,23 @@ self.onmessage = async (e) => {
     case "TRANSFORM": {
       if (!processor) return;
       const { action } = payload;
-      if (action === "FLIP_H") processor.flip_horizontal();
-      else if (action === "FLIP_V") processor.flip_vertical();
-      else if (action === "ROTATE_90") {
+      let label = "Transform";
+      if (action === "FLIP_H") {
+        processor.flip_horizontal();
+        label = "Flip Horizontal";
+      } else if (action === "FLIP_V") {
+        processor.flip_vertical();
+        label = "Flip Vertical";
+      } else if (action === "ROTATE_90") {
         processor.rotate_90();
+        label = "Rotate 90° CW";
         if (offscreenCanvas) {
           offscreenCanvas.width = processor.width();
           offscreenCanvas.height = processor.height();
         }
       }
+
+      processor.push_history(label);
 
       const pixelPtr = processor.pixel_ptr();
       const pixelLen = processor.pixel_len();
@@ -287,6 +347,51 @@ self.onmessage = async (e) => {
         width: processor.width(),
         height: processor.height()
       });
+      postHistoryState();
+      break;
+    }
+
+    case "UNDO": {
+      if (!processor) return;
+      const success = processor.undo();
+      if (success) {
+        sendRestoredState();
+      }
+      break;
+    }
+
+    case "REDO": {
+      if (!processor) return;
+      const success = processor.redo();
+      if (success) {
+        sendRestoredState();
+      }
+      break;
+    }
+
+    case "JUMP_TO_HISTORY": {
+      if (!processor) return;
+      const { index } = payload;
+      const success = processor.jump_to_history(index);
+      if (success) {
+        sendRestoredState();
+      }
+      break;
+    }
+
+    case "PUSH_HISTORY": {
+      if (!processor) return;
+      const { label } = payload;
+      processor.push_history(label || "Action");
+      postHistoryState();
+      break;
+    }
+
+    case "COMMIT_AS_BASE": {
+      if (!processor) return;
+      const { label } = payload;
+      processor.commit_as_base_with_label(label || "Commit Changes");
+      postHistoryState();
       break;
     }
 
