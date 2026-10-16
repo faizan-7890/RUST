@@ -93,6 +93,11 @@ const els = {
   imageUpload: document.getElementById("imageUpload"),
   btnSample: document.getElementById("btnSample"),
   btnBenchmark: document.getElementById("btnBenchmark"),
+  btnUndo: document.getElementById("btnUndo"),
+  btnRedo: document.getElementById("btnRedo"),
+  historyBadge: document.getElementById("historyBadge"),
+  historyStateBadge: document.getElementById("historyStateBadge"),
+  historyList: document.getElementById("historyList"),
   btnReset: document.getElementById("btnReset"),
   btnResetCurve: document.getElementById("btnResetCurve"),
   btnDownload: document.getElementById("btnDownload"),
@@ -268,6 +273,25 @@ function initWorker() {
         }
       } else if (type === "3D_LUT_PRESET_SET" || type === "3D_LUT_CLEARED") {
         requestRender();
+      } else if (type === "HISTORY_UPDATED") {
+        updateHistoryUI(e.data.canUndo, e.data.canRedo, e.data.count, e.data.cursor, e.data.historyJson);
+      } else if (type === "HISTORY_RESTORED") {
+        const { width, height, pixels, histogram, hasActiveMask, mask, canUndo, canRedo, count, cursor, historyJson } = e.data;
+        if (canvas.width !== width || canvas.height !== height) {
+          canvas.width = width;
+          canvas.height = height;
+          splitCanvas.width = width;
+          splitCanvas.height = height;
+          els.imageDimensions.textContent = `${width} × ${height}`;
+        }
+        if (pixels && !offscreenTransferred) {
+          ctx.putImageData(new ImageData(new Uint8ClampedArray(pixels), width, height), 0, 0);
+        }
+        if (histogram) updateHistogram(histogram);
+        if (mask) renderMaskOverlay(mask, width, height);
+        updateMaskStatus(hasActiveMask);
+        updateHistoryUI(canUndo, canRedo, count, cursor, historyJson);
+        updateSplitView();
       }
     };
 
@@ -362,6 +386,13 @@ function setupImage(img) {
   mainThreadProcessor = new ImageProcessor(w, h);
   mainThreadProcessor.load_image(originalRawData, w, h);
   mainThreadProcessor.set_simd_enabled(state.simdEnabled);
+  updateHistoryUI(
+    mainThreadProcessor.can_undo(),
+    mainThreadProcessor.can_redo(),
+    mainThreadProcessor.history_count(),
+    mainThreadProcessor.history_cursor(),
+    mainThreadProcessor.history_json()
+  );
 
   // Offload to Web Worker
   if (worker && workerReady) {
@@ -443,6 +474,124 @@ function dispatchBrushStroke(x0, y0, x1, y1) {
     renderMaskOverlay(mainThreadProcessor.get_mask(), mainThreadProcessor.width(), mainThreadProcessor.height());
     updateMaskStatus(true);
   }
+}
+
+// --- In-Wasm History Management & Timeline UI ---
+function updateHistoryUI(canUndo, canRedo, count, cursor, historyJson) {
+  if (els.btnUndo) els.btnUndo.disabled = !canUndo;
+  if (els.btnRedo) els.btnRedo.disabled = !canRedo;
+  if (els.historyBadge) els.historyBadge.textContent = `${(cursor ?? 0) + 1} / ${count || 1}`;
+
+  if (!els.historyList) return;
+
+  let entries = [];
+  try {
+    if (typeof historyJson === "string") {
+      entries = JSON.parse(historyJson);
+    } else if (Array.isArray(historyJson)) {
+      entries = historyJson;
+    }
+  } catch (err) {
+    console.error("Failed to parse historyJson:", err);
+  }
+
+  if (entries.length === 0) {
+    els.historyList.innerHTML = `<div class="history-empty text-muted">No history steps recorded</div>`;
+    if (els.historyStateBadge) els.historyStateBadge.textContent = "Original Image";
+    return;
+  }
+
+  const activeEntry = entries.find(e => e.active) || entries[entries.length - 1];
+  if (els.historyStateBadge && activeEntry) {
+    els.historyStateBadge.textContent = activeEntry.label;
+  }
+
+  els.historyList.innerHTML = entries.map((entry) => `
+    <div class="history-item ${entry.active ? 'active' : ''}" data-index="${entry.index}">
+      <span>${escapeHtml(entry.label)}</span>
+      <span class="history-item-badge">#${entry.index + 1}</span>
+    </div>
+  `).join("");
+
+  // Attach jump-to click handlers
+  els.historyList.querySelectorAll(".history-item").forEach(item => {
+    item.addEventListener("click", () => {
+      const idx = parseInt(item.dataset.index, 10);
+      if (!Number.isNaN(idx)) {
+        dispatchJumpToHistory(idx);
+      }
+    });
+  });
+}
+
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function dispatchUndo() {
+  if (state.workerEnabled && worker && workerReady) {
+    worker.postMessage({ type: "UNDO" });
+  } else if (mainThreadProcessor) {
+    const ok = mainThreadProcessor.undo();
+    if (ok) {
+      restoreMainThreadState();
+    }
+  }
+}
+
+function dispatchRedo() {
+  if (state.workerEnabled && worker && workerReady) {
+    worker.postMessage({ type: "REDO" });
+  } else if (mainThreadProcessor) {
+    const ok = mainThreadProcessor.redo();
+    if (ok) {
+      restoreMainThreadState();
+    }
+  }
+}
+
+function dispatchJumpToHistory(index) {
+  if (state.workerEnabled && worker && workerReady) {
+    worker.postMessage({ type: "JUMP_TO_HISTORY", payload: { index } });
+  } else if (mainThreadProcessor) {
+    const ok = mainThreadProcessor.jump_to_history(index);
+    if (ok) {
+      restoreMainThreadState();
+    }
+  }
+}
+
+function restoreMainThreadState() {
+  if (!mainThreadProcessor) return;
+  const w = mainThreadProcessor.width();
+  const h = mainThreadProcessor.height();
+  canvas.width = w;
+  canvas.height = h;
+  splitCanvas.width = w;
+  splitCanvas.height = h;
+  els.imageDimensions.textContent = `${w} × ${h}`;
+
+  const ptr = mainThreadProcessor.pixel_ptr();
+  const len = mainThreadProcessor.pixel_len();
+  const wasmMemory = new Uint8ClampedArray(wasmModule.memory.buffer, ptr, len);
+  ctx.putImageData(new ImageData(wasmMemory, w, h), 0, 0);
+
+  updateHistogram(mainThreadProcessor.get_histogram());
+  updateMaskStatus(mainThreadProcessor.is_mask_enabled());
+  renderMaskOverlay(mainThreadProcessor.get_mask(), w, h);
+  updateHistoryUI(
+    mainThreadProcessor.can_undo(),
+    mainThreadProcessor.can_redo(),
+    mainThreadProcessor.history_count(),
+    mainThreadProcessor.history_cursor(),
+    mainThreadProcessor.history_json()
+  );
+  updateSplitView();
 }
 
 // 5. Render Request Loop
@@ -649,6 +798,37 @@ function loadSampleProceduralImage() {
 
 // 9. Event Listeners & Interactive Curve Editor
 function setupEventListeners() {
+  // Undo / Redo Toolbar Button Listeners
+  if (els.btnUndo) {
+    els.btnUndo.addEventListener("click", dispatchUndo);
+  }
+  if (els.btnRedo) {
+    els.btnRedo.addEventListener("click", dispatchRedo);
+  }
+
+  // Global Keyboard Shortcuts (Ctrl+Z, Ctrl+Y, Ctrl+Shift+Z, Cmd+Z, Cmd+Shift+Z)
+  window.addEventListener("keydown", (e) => {
+    if (e.target && (e.target.tagName === "INPUT" && e.target.type === "text" || e.target.tagName === "TEXTAREA")) {
+      return;
+    }
+    const isMac = navigator.platform.toUpperCase().indexOf("MAC") >= 0;
+    const cmdOrCtrl = isMac ? e.metaKey : e.ctrlKey;
+
+    if (cmdOrCtrl && !e.altKey) {
+      if (e.key === "z" || e.key === "Z") {
+        e.preventDefault();
+        if (e.shiftKey) {
+          dispatchRedo();
+        } else {
+          dispatchUndo();
+        }
+      } else if (e.key === "y" || e.key === "Y") {
+        e.preventDefault();
+        dispatchRedo();
+      }
+    }
+  });
+
   // Web Worker Hardware Toggle
   if (els.toggleWorker) {
     els.toggleWorker.addEventListener("change", (e) => {
@@ -811,6 +991,19 @@ function setupEventListeners() {
         brush.drawing = false;
         brush.lastX = null;
         brush.lastY = null;
+        const label = brush.erase ? "Brush Erase" : "Brush Mask";
+        if (state.workerEnabled && worker && workerReady) {
+          worker.postMessage({ type: "PUSH_HISTORY", payload: { label } });
+        } else if (mainThreadProcessor) {
+          mainThreadProcessor.push_history(label);
+          updateHistoryUI(
+            mainThreadProcessor.can_undo(),
+            mainThreadProcessor.can_redo(),
+            mainThreadProcessor.history_count(),
+            mainThreadProcessor.history_cursor(),
+            mainThreadProcessor.history_json()
+          );
+        }
       }
     });
 
@@ -1001,18 +1194,34 @@ function setupEventListeners() {
   els.btnSobel.addEventListener("click", () => {
     if (mainThreadProcessor) {
       mainThreadProcessor.sobel_edges();
+      mainThreadProcessor.commit_as_base_with_label("Sobel Edges");
       const ptr = mainThreadProcessor.pixel_ptr();
       const len = mainThreadProcessor.pixel_len();
       ctx.putImageData(new ImageData(new Uint8ClampedArray(wasmModule.memory.buffer, ptr, len), canvas.width, canvas.height), 0, 0);
+      updateHistoryUI(
+        mainThreadProcessor.can_undo(),
+        mainThreadProcessor.can_redo(),
+        mainThreadProcessor.history_count(),
+        mainThreadProcessor.history_cursor(),
+        mainThreadProcessor.history_json()
+      );
     }
   });
 
   els.btnEmboss.addEventListener("click", () => {
     if (mainThreadProcessor) {
       mainThreadProcessor.emboss();
+      mainThreadProcessor.commit_as_base_with_label("Emboss");
       const ptr = mainThreadProcessor.pixel_ptr();
       const len = mainThreadProcessor.pixel_len();
       ctx.putImageData(new ImageData(new Uint8ClampedArray(wasmModule.memory.buffer, ptr, len), canvas.width, canvas.height), 0, 0);
+      updateHistoryUI(
+        mainThreadProcessor.can_undo(),
+        mainThreadProcessor.can_redo(),
+        mainThreadProcessor.history_count(),
+        mainThreadProcessor.history_cursor(),
+        mainThreadProcessor.history_json()
+      );
     }
   });
 
@@ -1022,7 +1231,15 @@ function setupEventListeners() {
       worker.postMessage({ type: "TRANSFORM", payload: { action: "FLIP_H" } });
     } else if (mainThreadProcessor) {
       mainThreadProcessor.flip_horizontal();
+      mainThreadProcessor.push_history("Flip Horizontal");
       applyFilters();
+      updateHistoryUI(
+        mainThreadProcessor.can_undo(),
+        mainThreadProcessor.can_redo(),
+        mainThreadProcessor.history_count(),
+        mainThreadProcessor.history_cursor(),
+        mainThreadProcessor.history_json()
+      );
     }
   });
 
@@ -1031,7 +1248,15 @@ function setupEventListeners() {
       worker.postMessage({ type: "TRANSFORM", payload: { action: "FLIP_V" } });
     } else if (mainThreadProcessor) {
       mainThreadProcessor.flip_vertical();
+      mainThreadProcessor.push_history("Flip Vertical");
       applyFilters();
+      updateHistoryUI(
+        mainThreadProcessor.can_undo(),
+        mainThreadProcessor.can_redo(),
+        mainThreadProcessor.history_count(),
+        mainThreadProcessor.history_cursor(),
+        mainThreadProcessor.history_json()
+      );
     }
   });
 
@@ -1040,12 +1265,20 @@ function setupEventListeners() {
       worker.postMessage({ type: "TRANSFORM", payload: { action: "ROTATE_90" } });
     } else if (mainThreadProcessor) {
       mainThreadProcessor.rotate_90();
+      mainThreadProcessor.push_history("Rotate 90° CW");
       canvas.width = mainThreadProcessor.width();
       canvas.height = mainThreadProcessor.height();
       splitCanvas.width = canvas.width;
       splitCanvas.height = canvas.height;
       els.imageDimensions.textContent = `${canvas.width} × ${canvas.height}`;
       applyFilters();
+      updateHistoryUI(
+        mainThreadProcessor.can_undo(),
+        mainThreadProcessor.can_redo(),
+        mainThreadProcessor.history_count(),
+        mainThreadProcessor.history_cursor(),
+        mainThreadProcessor.history_json()
+      );
     }
   });
 
@@ -1230,6 +1463,19 @@ function setupEventListeners() {
       updateAllLuts();
       syncControls();
       requestRender();
+      const label = `Preset: ${p}`;
+      if (state.workerEnabled && worker && workerReady) {
+        worker.postMessage({ type: "PUSH_HISTORY", payload: { label } });
+      } else if (mainThreadProcessor) {
+        mainThreadProcessor.push_history(label);
+        updateHistoryUI(
+          mainThreadProcessor.can_undo(),
+          mainThreadProcessor.can_redo(),
+          mainThreadProcessor.history_count(),
+          mainThreadProcessor.history_cursor(),
+          mainThreadProcessor.history_json()
+        );
+      }
     });
   });
 
@@ -1240,6 +1486,19 @@ function setupEventListeners() {
     syncControls();
     if (mainThreadProcessor) mainThreadProcessor.reset_to_base();
     requestRender();
+    const label = "Reset Parameters";
+    if (state.workerEnabled && worker && workerReady) {
+      worker.postMessage({ type: "PUSH_HISTORY", payload: { label } });
+    } else if (mainThreadProcessor) {
+      mainThreadProcessor.push_history(label);
+      updateHistoryUI(
+        mainThreadProcessor.can_undo(),
+        mainThreadProcessor.can_redo(),
+        mainThreadProcessor.history_count(),
+        mainThreadProcessor.history_cursor(),
+        mainThreadProcessor.history_json()
+      );
+    }
   });
 
   // Export
