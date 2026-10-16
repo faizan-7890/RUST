@@ -27,6 +27,7 @@ flowchart TD
         BaseBuf["📦 Base Image Buffer<br/>(Unmodified Source RGBA u8)"]
         CurrBuf["⚡ Working Image Buffer<br/>(Processed Output RGBA u8)"]
         LUT["📈 Lookup Tables (LUT)<br/>(Master/RGB Spline Curves, Gamma, Range Maps)"]
+        HistoryRing["📼 History Ring Buffer<br/>(12 Circular State Snapshots)"]
     end
 
     subgraph Wasm_Core["🦀 Rust WebAssembly Core Engine (cdylib + SIMD128)"]
@@ -35,6 +36,7 @@ flowchart TD
         SplineEngine["Monotone Cubic Spline Engine<br/>(Fritsch-Carlson 256-LUT Interpolator)"]
         LUT3DEngine["3D LUT Grading Engine<br/>(.CUBE Parser & Trilinear Interpolator)"]
         LensEngine["Lens Optics & Dispersion Engine<br/>(Brown-Conrady Radial Warping & Lateral CA)"]
+        HistoryManager["In-Wasm History Manager<br/>(O(1) Snapshot Eviction & Redo Branch Truncation)"]
         Filters["Color Kernels<br/>(Brightness, Contrast, Saturation, Hue, Sepia)"]
         Convolutions["Spatial and Edge Kernels<br/>(Bilateral Denoise, USM, Gaussian Blur, Sobel, Sharpen)"]
         Transforms["Geometric Engine<br/>(In-Place Flips, 90°/180°/270° Rotations)"]
@@ -43,6 +45,7 @@ flowchart TD
     UI -->|User Input / Gestures| Controller
     Controller -->|"postMessage: LOAD_IMAGE"| WorkerRouter
     Controller -->|"postMessage: RENDER(state, curves)"| WorkerRouter
+    Controller -->|"postMessage: UNDO / REDO / JUMP"| WorkerRouter
     
     WorkerRouter --> Processor
     Processor -->|Store Baseline| BaseBuf
@@ -55,6 +58,8 @@ flowchart TD
     Processor --> LUT3DEngine
     Processor --> LensEngine
     Processor --> Transforms
+    Processor --> HistoryManager
+    HistoryManager <-->|Instant Snapshot / Restore| HistoryRing
     
     Filters -->|Direct In-Place Mutation| CurrBuf
     Convolutions -->|Direct In-Place Mutation| CurrBuf
@@ -65,6 +70,7 @@ flowchart TD
     CurrBuf -.->|Zero-Copy Uint8ClampedArray View| Offscreen
     Offscreen -.->|Render Output| UI
     WorkerRouter -->|postMessage: RENDER_COMPLETE| Controller
+    WorkerRouter -->|postMessage: HISTORY_UPDATED| Controller
     Controller -->|"updateHistogram()"| HistCanvas
 ```
 
@@ -236,5 +242,41 @@ flowchart TD
     Coords --> BilinearR & BilinearG & BilinearB
     BilinearR & BilinearG & BilinearB --> PixelOut
 ```
+
+---
+
+## 8. In-Wasm Undo / Redo History Ring Buffer Architecture
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant UI as HTML5 UI / Keyboard (Ctrl+Z)
+    participant Main as Controller (main.js)
+    participant Worker as Web Worker (worker.js)
+    participant Processor as Wasm ImageProcessor
+    participant Ring as HistoryManager Ring Buffer (Linear Memory)
+
+    Note over UI,Ring: State Commit / Transformation
+    UI->>Main: User applies Transform / Preset / Brush Stroke
+    Main->>Worker: postMessage({ type: 'TRANSFORM', payload: { action: 'ROTATE_90' } })
+    Worker->>Processor: processor.rotate_90()
+    Worker->>Processor: processor.push_history("Rotate 90° CW")
+    Processor->>Ring: push_snapshot(label, w, h, base, curr, mask)
+    Note over Ring: Evicts oldest entry if len >= 12; truncates future redo branch
+    Worker->>Main: postMessage({ type: 'HISTORY_UPDATED', canUndo: true, canRedo: false, count: 2, cursor: 1 })
+    Main->>UI: updateHistoryUI(canUndo, canRedo, timeline badges)
+
+    Note over UI,Ring: Undo Operation (Ctrl+Z)
+    UI->>Main: Press Ctrl+Z or Click Undo Button
+    Main->>Worker: postMessage({ type: 'UNDO' })
+    Worker->>Processor: processor.undo()
+    Processor->>Ring: ring.undo() (cursor -= 1)
+    Ring-->>Processor: HistoryEntry (restores base, curr, mask, dimensions)
+    Processor-->>Worker: success = true
+    Worker->>Worker: offscreenCtx.putImageData(restoredPixels)
+    Worker->>Main: postMessage({ type: 'HISTORY_RESTORED', canUndo: false, canRedo: true, cursor: 0 })
+    Main->>UI: Update timeline highlight & toggle button states
+```
+
 
 
