@@ -6,6 +6,7 @@ pub mod simd;
 pub mod masks;
 pub mod lut3d;
 pub mod lens;
+pub mod history;
 
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::Clamped;
@@ -34,6 +35,7 @@ pub struct ImageProcessor {
     use_simd: bool,
     active_3d_lut: Option<lut3d::Lut3D>,
     lut_3d_intensity: f32,
+    history: history::HistoryManager,
 }
 
 #[wasm_bindgen]
@@ -55,6 +57,7 @@ impl ImageProcessor {
             use_simd: simd_active,
             active_3d_lut: None,
             lut_3d_intensity: 1.0,
+            history: history::HistoryManager::new(12),
         }
     }
 
@@ -66,6 +69,16 @@ impl ImageProcessor {
         self.current_pixels = self.base_pixels.clone();
         self.mask_pixels = vec![0u8; (width * height) as usize];
         self.mask_enabled = false;
+        self.history.clear();
+        self.history.push_snapshot(
+            "Original Image".to_string(),
+            self.width,
+            self.height,
+            &self.base_pixels,
+            &self.current_pixels,
+            &self.mask_pixels,
+            self.mask_enabled,
+        );
     }
 
     /// Toggles WASM SIMD128 acceleration mode on or off.
@@ -405,6 +418,104 @@ impl ImageProcessor {
     /// Applies combined Brown-Conrady radial lens distortion and chromatic aberration in a single pass.
     pub fn lens_optics(&mut self, k1: f32, k2: f32, ca_amount: f32, ca_angle_deg: f32) {
         lens::apply_lens_optics_in_place(&mut self.current_pixels, self.width, self.height, k1, k2, ca_amount, ca_angle_deg);
+    }
+
+    // --- In-Wasm Undo / Redo History Engine ---
+
+    /// Records a snapshot of the current state into the circular history ring buffer.
+    pub fn push_history(&mut self, label: &str) {
+        self.history.push_snapshot(
+            label.to_string(),
+            self.width,
+            self.height,
+            &self.base_pixels,
+            &self.current_pixels,
+            &self.mask_pixels,
+            self.mask_enabled,
+        );
+    }
+
+    /// Reverts to the previous snapshot in the history ring buffer.
+    /// Returns true if an undo step was successfully restored.
+    pub fn undo(&mut self) -> bool {
+        if let Some(entry) = self.history.undo().cloned() {
+            self.width = entry.width;
+            self.height = entry.height;
+            self.base_pixels = entry.base_pixels;
+            self.current_pixels = entry.current_pixels;
+            self.mask_pixels = entry.mask_pixels;
+            self.mask_enabled = entry.mask_enabled;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Advances to the next snapshot in the history ring buffer.
+    /// Returns true if a redo step was successfully restored.
+    pub fn redo(&mut self) -> bool {
+        if let Some(entry) = self.history.redo().cloned() {
+            self.width = entry.width;
+            self.height = entry.height;
+            self.base_pixels = entry.base_pixels;
+            self.current_pixels = entry.current_pixels;
+            self.mask_pixels = entry.mask_pixels;
+            self.mask_enabled = entry.mask_enabled;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Jumps directly to the snapshot at `index`. Returns true if successful.
+    pub fn jump_to_history(&mut self, index: usize) -> bool {
+        if let Some(entry) = self.history.jump_to(index).cloned() {
+            self.width = entry.width;
+            self.height = entry.height;
+            self.base_pixels = entry.base_pixels;
+            self.current_pixels = entry.current_pixels;
+            self.mask_pixels = entry.mask_pixels;
+            self.mask_enabled = entry.mask_enabled;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Returns true if an undo action is currently available.
+    pub fn can_undo(&self) -> bool {
+        self.history.can_undo()
+    }
+
+    /// Returns true if a redo action is currently available.
+    pub fn can_redo(&self) -> bool {
+        self.history.can_redo()
+    }
+
+    /// Returns the total number of history snapshots available.
+    pub fn history_count(&self) -> usize {
+        self.history.count()
+    }
+
+    /// Returns the active history cursor index.
+    pub fn history_cursor(&self) -> usize {
+        self.history.cursor()
+    }
+
+    /// Returns the human-readable label of the snapshot at `index`.
+    pub fn history_label(&self, index: usize) -> String {
+        self.history.label_at(index).unwrap_or("").to_string()
+    }
+
+    /// Returns a compact JSON string of all history steps for UI rendering.
+    pub fn history_json(&self) -> String {
+        self.history.to_json_summary()
+    }
+
+    /// Commits the current processed pixels as base and records a history snapshot.
+    pub fn commit_as_base_with_label(&mut self, label: &str) {
+        self.base_pixels.copy_from_slice(&self.current_pixels);
+        self.push_history(label);
     }
 
     /// Unified high-speed filter pipeline: resets to base image and applies
