@@ -32,6 +32,7 @@ flowchart TD
         BaseBuf["📦 Base Image Buffer<br/>(Unmodified Source RGBA u8)"]
         CurrBuf["⚡ Working Image Buffer<br/>(Processed Output RGBA u8)"]
         LUT["📈 Lookup Tables (LUT)<br/>(Master/RGB Spline Curves, Gamma, Range Maps)"]
+        HistoryRing["📼 History Ring Buffer<br/>(12 Circular State Snapshots)"]
     end
 
     subgraph Wasm_Core["🦀 Rust WebAssembly Core Engine (cdylib + SIMD128)"]
@@ -40,6 +41,7 @@ flowchart TD
         SplineEngine["Monotone Cubic Spline Engine<br/>(Fritsch-Carlson 256-LUT Interpolator)"]
         LUT3DEngine["3D LUT Grading Engine<br/>(.CUBE Parser & Trilinear Interpolator)"]
         LensEngine["Lens Optics & Dispersion Engine<br/>(Brown-Conrady Radial Warping & Lateral CA)"]
+        HistoryManager["In-Wasm History Manager<br/>(O(1) Snapshot Eviction & Redo Branch Truncation)"]
         Filters["Color Kernels<br/>(Brightness, Contrast, Saturation, Hue, Sepia)"]
         Convolutions["Spatial and Edge Kernels<br/>(Bilateral Denoise, USM, Gaussian Blur, Sobel, Sharpen)"]
         Transforms["Geometric Engine<br/>(In-Place Flips, 90°/180°/270° Rotations)"]
@@ -48,6 +50,7 @@ flowchart TD
     UI -->|User Input / Gestures| Controller
     Controller -->|"postMessage: LOAD_IMAGE"| WorkerRouter
     Controller -->|"postMessage: RENDER(state, curves)"| WorkerRouter
+    Controller -->|"postMessage: UNDO / REDO / JUMP"| WorkerRouter
     
     WorkerRouter --> Processor
     Processor -->|Store Baseline| BaseBuf
@@ -60,6 +63,8 @@ flowchart TD
     Processor --> LUT3DEngine
     Processor --> LensEngine
     Processor --> Transforms
+    Processor --> HistoryManager
+    HistoryManager <-->|Instant Snapshot / Restore| HistoryRing
     
     Filters -->|Direct In-Place Mutation| CurrBuf
     Convolutions -->|Direct In-Place Mutation| CurrBuf
@@ -70,6 +75,7 @@ flowchart TD
     CurrBuf -.->|Zero-Copy Uint8ClampedArray View| Offscreen
     Offscreen -.->|Render Output| UI
     WorkerRouter -->|postMessage: RENDER_COMPLETE| Controller
+    WorkerRouter -->|postMessage: HISTORY_UPDATED| Controller
     Controller -->|"updateHistogram()"| HistCanvas
 ```
 
@@ -163,8 +169,23 @@ The optical distortion and dispersion kernel (`src/lens.rs`) simulates real-worl
 
 ---
 
+## ⏪ In-Wasm Undo / Redo History Ring Buffer Engine
+
+To eliminate costly JSON/ArrayBuffer serialization round-trips to the JavaScript main thread, all history state transitions are managed natively inside WebAssembly linear memory (`src/history.rs`):
+
+* **$O(1)$ Circular Ring Buffer**: Stores up to 12 complete full-state snapshots (`base_pixels`, `current_pixels`, `mask_pixels`, `mask_enabled`, `width`, `height`, and action `label`). When maximum capacity is reached, the oldest snapshot is evicted in $O(1)$ without memory reallocation.
+* **Non-Linear Redo Branch Truncation**: Applying a new transform or adjustment while navigated to an earlier undo state automatically truncates subsequent forward redo entries, preserving predictable branch semantics.
+* **Instant Desktop Keyboard Shortcuts**:
+  - <kbd>Ctrl</kbd> + <kbd>Z</kbd> / <kbd>Cmd</kbd> + <kbd>Z</kbd>: Step backwards (Undo)
+  - <kbd>Ctrl</kbd> + <kbd>Y</kbd> / <kbd>Cmd</kbd> + <kbd>Y</kbd> / <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Z</kbd>: Step forward (Redo)
+* **Visual Interactive History Timeline**: The sidebar displays an interactive history timeline with step badges (`#1`, `#2`, etc.) and active step indicator. Clicking any step jumps instantly to that state with zero canvas flicker.
+* **Memory Optimization**: Stored snapshots reside directly in Wasm linear memory pages, requiring zero serialization to JS and eliminating GC pressure.
+
+---
+
 ## ✨ Features & Filter Suite
 
+- **In-Wasm Undo / Redo Ring Buffer**: 12-level zero-copy circular history with keyboard shortcuts (<kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Y</kbd>) and clickable visual timeline.
 - **Lens Optics & Dispersion**: Brown-Conrady barrel & pincushion distortion with lateral chromatic aberration and prism angle control.
 - **Cinematic 3D LUT Grading**: Industry-standard `.cube` parser and real-time trilinear 3D interpolation with variable intensity.
 - **Selective Adjustment Brush**: Paint & erase local masks with adjustable size, feathering, and flow.
