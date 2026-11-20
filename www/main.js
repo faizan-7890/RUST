@@ -76,7 +76,14 @@ const state = {
   invert: false,
   grayscale: false,
   splitView: false,
-  splitPos: 0.5
+  splitPos: 0.5,
+  // OKLCH Perceptual Color
+  oklchLightness: 0.0,
+  oklchChroma: 1.0,
+  oklchHueRotation: 0.0,
+  oklchSelHueCenter: 0.0,
+  oklchSelHueRange: 30.0,
+  oklchSelChromaBoost: 1.0,
 };
 
 // UI Elements
@@ -178,6 +185,20 @@ const els = {
   valChromaticAberration: document.getElementById("valChromaticAberration"),
   sliderCaAngle: document.getElementById("sliderCaAngle"),
   valCaAngle: document.getElementById("valCaAngle"),
+  // OKLCH Perceptual Color Elements
+  oklchLightness: document.getElementById("oklchLightness"),
+  oklchLightnessVal: document.getElementById("oklchLightnessVal"),
+  oklchChroma: document.getElementById("oklchChroma"),
+  oklchChromaVal: document.getElementById("oklchChromaVal"),
+  oklchHueRotation: document.getElementById("oklchHueRotation"),
+  oklchHueRotationVal: document.getElementById("oklchHueRotationVal"),
+  oklchSelHueCenter: document.getElementById("oklchSelHueCenter"),
+  oklchSelHueCenterVal: document.getElementById("oklchSelHueCenterVal"),
+  oklchSelHueRange: document.getElementById("oklchSelHueRange"),
+  oklchSelHueRangeVal: document.getElementById("oklchSelHueRangeVal"),
+  oklchSelChromaBoost: document.getElementById("oklchSelChromaBoost"),
+  oklchSelChromaBoostVal: document.getElementById("oklchSelChromaBoostVal"),
+  resetOklch: document.getElementById("resetOklch"),
 };
 
 // 1. Live UI FPS Meter
@@ -650,6 +671,20 @@ function applyFilters() {
       state.chromaticAberration,
       state.caAngle
     );
+
+    // OKLCH Perceptual Color Adjustments (post-pipeline pass)
+    const oklchActive = state.oklchLightness !== 0.0 || state.oklchChroma !== 1.0 ||
+                        state.oklchHueRotation !== 0.0 || state.oklchSelChromaBoost !== 1.0;
+    if (oklchActive) {
+      mainThreadProcessor.apply_oklch_adjustments(
+        state.oklchLightness,
+        state.oklchChroma,
+        state.oklchHueRotation,
+        state.oklchSelHueCenter,
+        state.oklchSelHueRange,
+        state.oklchSelChromaBoost
+      );
+    }
 
     const pixelPtr = mainThreadProcessor.pixel_ptr();
     const pixelLen = mainThreadProcessor.pixel_len();
@@ -1172,6 +1207,80 @@ function setupEventListeners() {
       state.chromaticAberration = 0.0;
       state.caAngle = 0.0;
       syncControls();
+      requestRender();
+    });
+  }
+
+  // ── OKLCH Perceptual Color Sliders ──────────────────────────────────────
+  // Lightness: slider -100..100  → state -1.0..1.0
+  if (els.oklchLightness) {
+    els.oklchLightness.addEventListener("input", (e) => {
+      const v = parseFloat(e.target.value);
+      state.oklchLightness = v / 100.0;
+      if (els.oklchLightnessVal) els.oklchLightnessVal.textContent = v;
+      requestRender();
+    });
+  }
+  // Chroma: slider 0..300  → state 0.0..3.0
+  if (els.oklchChroma) {
+    els.oklchChroma.addEventListener("input", (e) => {
+      const v = parseFloat(e.target.value);
+      state.oklchChroma = v / 100.0;
+      if (els.oklchChromaVal) els.oklchChromaVal.textContent = (v / 100).toFixed(2);
+      requestRender();
+    });
+  }
+  // Hue Rotation: slider -180..180 → state degrees
+  if (els.oklchHueRotation) {
+    els.oklchHueRotation.addEventListener("input", (e) => {
+      const v = parseFloat(e.target.value);
+      state.oklchHueRotation = v;
+      if (els.oklchHueRotationVal) els.oklchHueRotationVal.textContent = `${v}°`;
+      requestRender();
+    });
+  }
+  // Selective Hue Center: slider 0..360 → state degrees
+  if (els.oklchSelHueCenter) {
+    els.oklchSelHueCenter.addEventListener("input", (e) => {
+      const v = parseFloat(e.target.value);
+      state.oklchSelHueCenter = v;
+      if (els.oklchSelHueCenterVal) els.oklchSelHueCenterVal.textContent = `${v}°`;
+      requestRender();
+    });
+  }
+  // Selective Hue Range: slider 0..90 → state degrees
+  if (els.oklchSelHueRange) {
+    els.oklchSelHueRange.addEventListener("input", (e) => {
+      const v = parseFloat(e.target.value);
+      state.oklchSelHueRange = v;
+      if (els.oklchSelHueRangeVal) els.oklchSelHueRangeVal.textContent = `${v}°`;
+      requestRender();
+    });
+  }
+  // Selective Chroma Boost: slider 0..300 → state 0.0..3.0
+  if (els.oklchSelChromaBoost) {
+    els.oklchSelChromaBoost.addEventListener("input", (e) => {
+      const v = parseFloat(e.target.value);
+      state.oklchSelChromaBoost = v / 100.0;
+      if (els.oklchSelChromaBoostVal) els.oklchSelChromaBoostVal.textContent = (v / 100).toFixed(2);
+      requestRender();
+    });
+  }
+  // Reset OKLCH button
+  if (els.resetOklch) {
+    els.resetOklch.addEventListener("click", () => {
+      state.oklchLightness = 0.0;
+      state.oklchChroma = 1.0;
+      state.oklchHueRotation = 0.0;
+      state.oklchSelHueCenter = 0.0;
+      state.oklchSelHueRange = 30.0;
+      state.oklchSelChromaBoost = 1.0;
+      if (els.oklchLightness) { els.oklchLightness.value = 0; els.oklchLightnessVal.textContent = "0"; }
+      if (els.oklchChroma) { els.oklchChroma.value = 100; els.oklchChromaVal.textContent = "1.00"; }
+      if (els.oklchHueRotation) { els.oklchHueRotation.value = 0; els.oklchHueRotationVal.textContent = "0°"; }
+      if (els.oklchSelHueCenter) { els.oklchSelHueCenter.value = 0; els.oklchSelHueCenterVal.textContent = "0°"; }
+      if (els.oklchSelHueRange) { els.oklchSelHueRange.value = 30; els.oklchSelHueRangeVal.textContent = "30°"; }
+      if (els.oklchSelChromaBoost) { els.oklchSelChromaBoost.value = 100; els.oklchSelChromaBoostVal.textContent = "1.00"; }
       requestRender();
     });
   }
