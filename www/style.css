@@ -796,4 +796,53 @@ input[type="range"]::-webkit-slider-thumb {
   font-style: italic;
 }
 
+/* ── OKLCH Perceptual Color Panel ─────────────────────────────────────────── */
+
+#oklchGroup .group-heading {
+  /* Rainbow gradient underline to signal perceptual color context */
+  background: linear-gradient(90deg,
+    oklch(0.65 0.2 0deg),
+    oklch(0.65 0.2 60deg),
+    oklch(0.65 0.2 120deg),
+    oklch(0.65 0.2 180deg),
+    oklch(0.65 0.2 240deg),
+    oklch(0.65 0.2 300deg),
+    oklch(0.65 0.2 360deg)
+  );
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  font-weight: 700;
+}
+
+/* Fallback for browsers without OKLCH CSS support */
+@supports not (color: oklch(0 0 0)) {
+  #oklchGroup .group-heading {
+    background: linear-gradient(90deg, #f77, #fa0, #ff7, #7f7, #77f, #f7f, #f77);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+}
+
+#oklchGroup .reset-btn {
+  width: 100%;
+  margin-top: 6px;
+  padding: 4px 0;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+#oklchGroup .reset-btn:hover {
+  background: var(--accent);
+  color: #000;
+  border-color: var(--accent);
+}
+
+
 
