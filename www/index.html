@@ -358,6 +358,50 @@
             <input type="checkbox" id="toggleSplitView"> Split Before / After View
           </label>
         </div>
+
+        <!-- ── Perceptual Color (OKLCH) ───────────────────────────────────── -->
+        <div class="sidebar-group" id="oklchGroup">
+          <h3 class="group-heading">🌈 Perceptual Color (OKLCH)</h3>
+
+          <div class="control-row">
+            <label for="oklchLightness">Lightness</label>
+            <input type="range" id="oklchLightness" min="-100" max="100" value="0" step="1">
+            <span class="val" id="oklchLightnessVal">0</span>
+          </div>
+
+          <div class="control-row">
+            <label for="oklchChroma">Chroma (Vibrance)</label>
+            <input type="range" id="oklchChroma" min="0" max="300" value="100" step="1">
+            <span class="val" id="oklchChromaVal">1.00</span>
+          </div>
+
+          <div class="control-row">
+            <label for="oklchHueRotation">Hue Rotation</label>
+            <input type="range" id="oklchHueRotation" min="-180" max="180" value="0" step="1">
+            <span class="val" id="oklchHueRotationVal">0°</span>
+          </div>
+
+          <div class="control-row">
+            <label for="oklchSelHueCenter">Sel. Hue Center</label>
+            <input type="range" id="oklchSelHueCenter" min="0" max="360" value="0" step="1">
+            <span class="val" id="oklchSelHueCenterVal">0°</span>
+          </div>
+
+          <div class="control-row">
+            <label for="oklchSelHueRange">Sel. Hue Range</label>
+            <input type="range" id="oklchSelHueRange" min="0" max="90" value="30" step="1">
+            <span class="val" id="oklchSelHueRangeVal">30°</span>
+          </div>
+
+          <div class="control-row">
+            <label for="oklchSelChromaBoost">Sel. Chroma Boost</label>
+            <input type="range" id="oklchSelChromaBoost" min="0" max="300" value="100" step="1">
+            <span class="val" id="oklchSelChromaBoostVal">1.00</span>
+          </div>
+
+          <button class="reset-btn" id="resetOklch">↺ Reset OKLCH</button>
+        </div>
+
       </aside>
     </main>
   </div>
