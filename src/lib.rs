@@ -7,6 +7,7 @@ pub mod masks;
 pub mod lut3d;
 pub mod lens;
 pub mod history;
+pub mod oklch;
 
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::Clamped;
@@ -644,4 +645,38 @@ impl ImageProcessor {
             }
         }
     }
+
+    /// Apply OKLCH perceptual color space adjustments.
+    ///
+    /// Operates in-place on the current rendered pixels using the full
+    /// sRGB → Linear → OKLab → OKLCH pipeline, then converts back.
+    ///
+    /// # Parameters
+    /// - `lightness_shift`    — additive lightness delta [−1.0, +1.0]; 0 = no change
+    /// - `chroma_scale`       — multiplicative chroma scale [0.0, 3.0]; 1.0 = no change
+    /// - `hue_rotation_deg`   — global hue rotation in degrees [−180, +180]; 0 = no change
+    /// - `sel_hue_center_deg` — center hue of selective band [0, 360)
+    /// - `sel_hue_range_deg`  — full angular width of selective band [0, 90]
+    /// - `sel_chroma_boost`   — chroma multiplier for pixels in the selective band
+    #[wasm_bindgen]
+    pub fn apply_oklch_adjustments(
+        &mut self,
+        lightness_shift: f32,
+        chroma_scale: f32,
+        hue_rotation_deg: f32,
+        sel_hue_center_deg: f32,
+        sel_hue_range_deg: f32,
+        sel_chroma_boost: f32,
+    ) {
+        oklch::apply_oklch_adjustments(
+            &mut self.current_pixels,
+            lightness_shift,
+            chroma_scale,
+            hue_rotation_deg,
+            sel_hue_center_deg,
+            sel_hue_range_deg,
+            sel_chroma_boost,
+        );
+    }
 }
+
