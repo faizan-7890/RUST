@@ -37,6 +37,7 @@ flowchart TD
         LUT3DEngine["3D LUT Grading Engine<br/>(.CUBE Parser & Trilinear Interpolator)"]
         LensEngine["Lens Optics & Dispersion Engine<br/>(Brown-Conrady Radial Warping & Lateral CA)"]
         HistoryManager["In-Wasm History Manager<br/>(O(1) Snapshot Eviction & Redo Branch Truncation)"]
+        OKLCHEngine["OKLCH Perceptual Color Engine<br/>(sRGB → Linear → OKLab → OKLCH Pipeline)"]
         Filters["Color Kernels<br/>(Brightness, Contrast, Saturation, Hue, Sepia)"]
         Convolutions["Spatial and Edge Kernels<br/>(Bilateral Denoise, USM, Gaussian Blur, Sobel, Sharpen)"]
         Transforms["Geometric Engine<br/>(In-Place Flips, 90°/180°/270° Rotations)"]
@@ -59,6 +60,8 @@ flowchart TD
     Processor --> LensEngine
     Processor --> Transforms
     Processor --> HistoryManager
+    Processor --> OKLCHEngine
+    OKLCHEngine -->|"Direct In-Place Mutation"| CurrBuf
     HistoryManager <-->|Instant Snapshot / Restore| HistoryRing
     
     Filters -->|Direct In-Place Mutation| CurrBuf
@@ -278,5 +281,38 @@ sequenceDiagram
     Main->>UI: Update timeline highlight & toggle button states
 ```
 
+---
+
+## 9. OKLCH Perceptual Color Engine Pipeline
+
+```mermaid
+flowchart TD
+    subgraph Input_Pixel["Input Pixel (sRGB u8)"]
+        SRGB["[R, G, B] ∈ [0, 255]"]
+    end
+
+    subgraph Forward_Path["Forward Conversion Path"]
+        Lin["sRGB → Linear Light (f32)<br/>(IEC 61966-2-1 Gamma Expand)"]
+        OKLab["Linear → OKLab (L, a, b)<br/>(M1 Matrix → Cube-Root → M2 Matrix)"]
+        OKLCH["OKLab → OKLCH (L, C, H)<br/>(C = √(a²+b²), H = atan2(b,a))"]
+    end
+
+    subgraph Adjustments["Perceptual Adjustments in OKLCH Space"]
+        AdjL["Lightness Shift: L ← L + δ"]
+        AdjC["Chroma Scale: C ← C × s"]
+        AdjH["Hue Rotation: H ← H + θ"]
+        AdjSel["Selective Hue-Range Boost:<br/>w = cosine_window(ΔH)<br/>C ← C × (1 + w × (boost - 1))"]
+    end
+
+    subgraph Inverse_Path["Inverse Conversion Path"]
+        OKLab2["OKLCH → OKLab<br/>(a = C·cos(H), b = C·sin(H))"]
+        Lin2["OKLab → Linear Light<br/>(M2⁻¹ → Cube → M1⁻¹)"]
+        SRGB2["Linear → sRGB u8<br/>(Gamma Compress + Clamp + Quantise)"]
+    end
+
+    SRGB --> Lin --> OKLab --> OKLCH
+    OKLCH --> AdjL --> AdjC --> AdjH --> AdjSel
+    AdjSel --> OKLab2 --> Lin2 --> SRGB2
+```
 
 
