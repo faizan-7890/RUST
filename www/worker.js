@@ -171,6 +171,26 @@ self.onmessage = async (e) => {
         state.caAngle ?? 0
       );
 
+      // 5. OKLCH Perceptual Color Adjustments (post-pipeline pass)
+      const oklchLightness    = state.oklchLightness    ?? 0.0;
+      const oklchChroma       = state.oklchChroma       ?? 1.0;
+      const oklchHueRotation  = state.oklchHueRotation  ?? 0.0;
+      const oklchSelCenter    = state.oklchSelHueCenter ?? 0.0;
+      const oklchSelRange     = state.oklchSelHueRange  ?? 30.0;
+      const oklchSelBoost     = state.oklchSelChromaBoost ?? 1.0;
+      const oklchActive = oklchLightness !== 0.0 || oklchChroma !== 1.0 ||
+                          oklchHueRotation !== 0.0 || oklchSelBoost !== 1.0;
+      if (oklchActive) {
+        processor.apply_oklch_adjustments(
+          oklchLightness,
+          oklchChroma,
+          oklchHueRotation,
+          oklchSelCenter,
+          oklchSelRange,
+          oklchSelBoost
+        );
+      }
+
       const t1 = performance.now();
       const elapsed = (t1 - t0).toFixed(2);
       const hist = processor.get_histogram();
