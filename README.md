@@ -42,6 +42,7 @@ flowchart TD
         LUT3DEngine["3D LUT Grading Engine<br/>(.CUBE Parser & Trilinear Interpolator)"]
         LensEngine["Lens Optics & Dispersion Engine<br/>(Brown-Conrady Radial Warping & Lateral CA)"]
         HistoryManager["In-Wasm History Manager<br/>(O(1) Snapshot Eviction & Redo Branch Truncation)"]
+        OKLCHEngine["OKLCH Perceptual Color Engine<br/>(sRGB → Linear → OKLab → OKLCH Pipeline)"]
         Filters["Color Kernels<br/>(Brightness, Contrast, Saturation, Hue, Sepia)"]
         Convolutions["Spatial and Edge Kernels<br/>(Bilateral Denoise, USM, Gaussian Blur, Sobel, Sharpen)"]
         Transforms["Geometric Engine<br/>(In-Place Flips, 90°/180°/270° Rotations)"]
@@ -64,6 +65,8 @@ flowchart TD
     Processor --> LensEngine
     Processor --> Transforms
     Processor --> HistoryManager
+    Processor --> OKLCHEngine
+    OKLCHEngine -->|"Direct In-Place Mutation"| CurrBuf
     HistoryManager <-->|Instant Snapshot / Restore| HistoryRing
     
     Filters -->|Direct In-Place Mutation| CurrBuf
@@ -183,9 +186,45 @@ To eliminate costly JSON/ArrayBuffer serialization round-trips to the JavaScript
 
 ---
 
+## 🌈 OKLCH Perceptual Color Space Engine
+
+The OKLCH engine operates in Björn Ottosson's **OKLab** perceptual color space — a modern uniform color model that ensures lightness, chroma, and hue adjustments are perceptually linear and do not cause undesirable color shifts (unlike HSL/HSV manipulations in sRGB).
+
+### Full Bidirectional Pipeline
+
+```
+sRGB (u8) → Linear Light (f32) → XYZ (D65) → OKLab (L,a,b) → OKLCH (L,C,H)
+     ↑                                                              ↓
+     └──────── Inverse Path ←── XYZ ←── OKLab ←── OKLCH (adjusted) ┘
+```
+
+### Color Space Conversions
+
+| Step | Transformation | Method |
+|------|---------------|--------|
+| sRGB → Linear | IEC 61966-2-1 piecewise gamma | `v ≤ 0.04045 ? v/12.92 : ((v+0.055)/1.055)^2.4` |
+| Linear → LMS | 3×3 matrix multiply | Ottosson's M1 matrix |
+| LMS → LMS' | Cube-root non-linearity | `l' = ∛l` |
+| LMS' → OKLab | 3×3 matrix multiply | Ottosson's M2 matrix |
+| OKLab → OKLCH | Polar conversion | `C = √(a²+b²)`, `H = atan2(b,a)` |
+
+### Adjustments in OKLCH Space
+
+- **Lightness Shift** (`L ± δ`): Perceptually uniform brightness — no hue drift at extremes
+- **Chroma Scale** (`C × s`): Pure vibrance/saturation control — boosts colorfulness without shifting the hue angle
+- **Hue Rotation** (`H + θ`): Smooth, uniform rotation through all hues (unlike HSL which distorts blues/yellows)
+- **Selective Hue-Range Chroma Boost**: Targets a specific hue band (e.g., boost reds without touching blues) using a smooth cosine-windowed weight function: `w = 0.5 × (1 + cos(π × |ΔH|/half_range))`
+
+### Implementation
+
+The engine is implemented in `src/oklch.rs` with all conversion functions inlined for maximum performance. The Wasm API exposes a single post-pipeline pass via `apply_oklch_adjustments()` on `ImageProcessor`, called after the base filter pipeline completes.
+
+---
+
 ## ✨ Features & Filter Suite
 
 - **In-Wasm Undo / Redo Ring Buffer**: 12-level zero-copy circular history with keyboard shortcuts (<kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Y</kbd>) and clickable visual timeline.
+- **OKLCH Perceptual Color Engine**: Full sRGB → Linear → OKLab → OKLCH pipeline for perceptually uniform lightness, chroma boost without hue shift, global hue rotation, and selective per-hue chroma adjustment.
 - **Lens Optics & Dispersion**: Brown-Conrady barrel & pincushion distortion with lateral chromatic aberration and prism angle control.
 - **Cinematic 3D LUT Grading**: Industry-standard `.cube` parser and real-time trilinear 3D interpolation with variable intensity.
 - **Selective Adjustment Brush**: Paint & erase local masks with adjustable size, feathering, and flow.
