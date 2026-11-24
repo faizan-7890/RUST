@@ -1275,12 +1275,7 @@ function setupEventListeners() {
       state.oklchSelHueCenter = 0.0;
       state.oklchSelHueRange = 30.0;
       state.oklchSelChromaBoost = 1.0;
-      if (els.oklchLightness) { els.oklchLightness.value = 0; els.oklchLightnessVal.textContent = "0"; }
-      if (els.oklchChroma) { els.oklchChroma.value = 100; els.oklchChromaVal.textContent = "1.00"; }
-      if (els.oklchHueRotation) { els.oklchHueRotation.value = 0; els.oklchHueRotationVal.textContent = "0°"; }
-      if (els.oklchSelHueCenter) { els.oklchSelHueCenter.value = 0; els.oklchSelHueCenterVal.textContent = "0°"; }
-      if (els.oklchSelHueRange) { els.oklchSelHueRange.value = 30; els.oklchSelHueRangeVal.textContent = "30°"; }
-      if (els.oklchSelChromaBoost) { els.oklchSelChromaBoost.value = 100; els.oklchSelChromaBoostVal.textContent = "1.00"; }
+      syncControls();
       requestRender();
     });
   }
@@ -1702,6 +1697,12 @@ function resetState() {
   state.lensK1 = 0.0;
   state.chromaticAberration = 0.0;
   state.caAngle = 0.0;
+  state.oklchLightness = 0.0;
+  state.oklchChroma = 1.0;
+  state.oklchHueRotation = 0.0;
+  state.oklchSelHueCenter = 0.0;
+  state.oklchSelHueRange = 30.0;
+  state.oklchSelChromaBoost = 1.0;
 
   curves.master = [{ x: 0, y: 0 }, { x: 255, y: 255 }];
   curves.r = [{ x: 0, y: 0 }, { x: 255, y: 255 }];
@@ -1746,6 +1747,34 @@ function syncControls() {
   if (els.sliderCaAngle) {
     els.sliderCaAngle.value = state.caAngle;
     if (els.valCaAngle) els.valCaAngle.textContent = `${Math.round(state.caAngle)}°`;
+  }
+
+  if (els.oklchLightness) {
+    const v = Math.round(state.oklchLightness * 100);
+    els.oklchLightness.value = v;
+    if (els.oklchLightnessVal) els.oklchLightnessVal.textContent = String(v);
+  }
+  if (els.oklchChroma) {
+    const v = Math.round(state.oklchChroma * 100);
+    els.oklchChroma.value = v;
+    if (els.oklchChromaVal) els.oklchChromaVal.textContent = state.oklchChroma.toFixed(2);
+  }
+  if (els.oklchHueRotation) {
+    els.oklchHueRotation.value = state.oklchHueRotation;
+    if (els.oklchHueRotationVal) els.oklchHueRotationVal.textContent = `${state.oklchHueRotation}°`;
+  }
+  if (els.oklchSelHueCenter) {
+    els.oklchSelHueCenter.value = state.oklchSelHueCenter;
+    if (els.oklchSelHueCenterVal) els.oklchSelHueCenterVal.textContent = `${state.oklchSelHueCenter}°`;
+  }
+  if (els.oklchSelHueRange) {
+    els.oklchSelHueRange.value = state.oklchSelHueRange;
+    if (els.oklchSelHueRangeVal) els.oklchSelHueRangeVal.textContent = `${state.oklchSelHueRange}°`;
+  }
+  if (els.oklchSelChromaBoost) {
+    const v = Math.round(state.oklchSelChromaBoost * 100);
+    els.oklchSelChromaBoost.value = v;
+    if (els.oklchSelChromaBoostVal) els.oklchSelChromaBoostVal.textContent = state.oklchSelChromaBoost.toFixed(2);
   }
 
   if (els.sliderLutIntensity) {
