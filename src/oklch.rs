@@ -47,9 +47,9 @@ pub fn linear_to_srgb(v: f32) -> u8 {
 #[inline(always)]
 pub fn linear_to_oklab(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
     // M1: linear RGB → LMS
-    let l = 0.412_2214_7 * r + 0.536_328_6 * g + 0.051_450_7 * b;
-    let m = 0.211_9034_8 * r + 0.680_699_5 * g + 0.107_397_1 * b;
-    let s = 0.088_302_5 * r + 0.281_718_5 * g + 0.629_978_8 * b;
+    let l = 0.412_221_47 * r + 0.536_332_54 * g + 0.051_445_99 * b;
+    let m = 0.211_903_50 * r + 0.680_699_55 * g + 0.107_396_96 * b;
+    let s = 0.088_302_46 * r + 0.281_718_84 * g + 0.629_978_70 * b;
 
     // Cube-root non-linearity
     let l_ = l.cbrt();
@@ -162,7 +162,7 @@ pub fn apply_oklch_adjustments(
 
     // Pre-compute radian conversions (avoid per-pixel divisions)
     let hue_rotation_rad = hue_rotation_deg * (PI / 180.0);
-    let sel_center_rad = sel_hue_center_deg * (PI / 180.0) - PI; // atan2 range is [-π, π]
+    let sel_center_rad = sel_hue_center_deg * (PI / 180.0);
     let sel_half_range_rad = (sel_hue_range_deg * 0.5) * (PI / 180.0);
 
     // Decide which adjustments are active to skip no-op pixels
@@ -277,5 +277,17 @@ mod tests {
         let original = pixels.clone();
         apply_oklch_adjustments(&mut pixels, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0);
         assert_eq!(pixels, original);
+    }
+
+    #[test]
+    fn selective_hue_targets_reds_without_affecting_blues() {
+        // Muted red (~29° in OKLCH) and muted blue (~264° in OKLCH)
+        let mut pixels = vec![180u8, 80, 75, 255, 70, 90, 190, 255];
+        let blue_orig = [pixels[4], pixels[5], pixels[6], pixels[7]];
+        apply_oklch_adjustments(&mut pixels, 0.0, 1.0, 0.0, 29.0, 40.0, 1.8);
+        // Red pixel should change (chroma boosted)
+        assert_ne!(&pixels[0..4], &[180u8, 80, 75, 255]);
+        // Blue pixel should remain untouched
+        assert_eq!(&pixels[4..8], &blue_orig);
     }
 }
