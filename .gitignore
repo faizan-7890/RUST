@@ -2,5 +2,12 @@
 /www/pkg
 /www/node_modules
 /www/dist
+/www/dataconnect-generated
+/functions/node_modules
+/.firebase
+.firebaserc
+.env
+.env.*
+!.env.example
 *.lock
 **/.DS_Store
