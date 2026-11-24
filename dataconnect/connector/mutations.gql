@@ -1,0 +1,79 @@
+# Mutations executed via Firebase Data Connect against Cloud SQL PostgreSQL
+
+mutation UpsertUser($email: String, $displayName: String, $photoUrl: String) @auth(level: USER) {
+  user_upsert(
+    data: {
+      uid_expr: "auth.uid"
+      email: $email
+      displayName: $displayName
+      photoUrl: $photoUrl
+    }
+  )
+}
+
+mutation CreateProject(
+  $name: String!
+  $width: Int!
+  $height: Int!
+  $sourceStoragePath: String!
+  $maskStoragePath: String
+  $maskEnabled: Boolean!
+  $activeLutId: UUID
+  $filterState: Any!
+  $toneCurves: Any!
+  $isPublic: Boolean!
+) @auth(level: USER) {
+  project_insert(
+    data: {
+      ownerUid_expr: "auth.uid"
+      name: $name
+      width: $width
+      height: $height
+      sourceStoragePath: $sourceStoragePath
+      maskStoragePath: $maskStoragePath
+      maskEnabled: $maskEnabled
+      activeLutId: $activeLutId
+      filterState: $filterState
+      toneCurves: $toneCurves
+      isPublic: $isPublic
+    }
+  )
+}
+
+mutation CreatePreset(
+  $name: String!
+  $description: String
+  $filterState: Any!
+  $toneCurves: Any!
+  $isPublic: Boolean!
+) @auth(level: USER) {
+  preset_insert(
+    data: {
+      ownerUid_expr: "auth.uid"
+      name: $name
+      description: $description
+      filterState: $filterState
+      toneCurves: $toneCurves
+      isPublic: $isPublic
+    }
+  )
+}
+
+mutation RegisterCustomLut(
+  $title: String!
+  $lutSize: Int!
+  $storagePath: String!
+  $fileBytes: Int!
+  $isPublic: Boolean!
+) @auth(level: USER) {
+  customLut_insert(
+    data: {
+      ownerUid_expr: "auth.uid"
+      title: $title
+      lutSize: $lutSize
+      storagePath: $storagePath
+      fileBytes: $fileBytes
+      isPublic: $isPublic
+    }
+  )
+}
