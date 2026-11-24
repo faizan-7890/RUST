@@ -1,0 +1,23 @@
+{
+  "name": "wasm-image-studio-functions",
+  "version": "0.1.0",
+  "description": "Firebase Cloud Functions REST API backed by Cloud SQL (PostgreSQL) for Rust + Wasm Image Studio",
+  "type": "module",
+  "main": "src/index.js",
+  "engines": {
+    "node": "20"
+  },
+  "scripts": {
+    "serve": "firebase emulators:start --only functions,auth,storage,dataconnect",
+    "deploy": "firebase deploy --only functions",
+    "check": "node --check src/index.js && node --check src/app.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "firebase-admin": "^13.0.2",
+    "firebase-functions": "^6.3.2",
+    "pg": "^8.13.3",
+    "zod": "^3.24.2"
+  }
+}
