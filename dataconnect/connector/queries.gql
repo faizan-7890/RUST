@@ -1,0 +1,85 @@
+# Queries executed via Firebase Data Connect against Cloud SQL PostgreSQL
+
+query ListMyProjects @auth(level: USER) {
+  projects(
+    where: { ownerUid: { eq_expr: "auth.uid" } }
+    orderBy: [{ updatedAt: DESC }]
+  ) {
+    id
+    name
+    width
+    height
+    sourceStoragePath
+    maskStoragePath
+    maskEnabled
+    activeLutId
+    filterState
+    toneCurves
+    isPublic
+    updatedAt
+  }
+}
+
+query GetProjectById($id: UUID!) @auth(level: USER) {
+  project(id: $id) {
+    id
+    ownerUid
+    name
+    width
+    height
+    sourceStoragePath
+    maskStoragePath
+    maskEnabled
+    activeLutId
+    filterState
+    toneCurves
+    isPublic
+    createdAt
+    updatedAt
+  }
+}
+
+query ListMyPresets @auth(level: USER) {
+  presets(
+    where: { ownerUid: { eq_expr: "auth.uid" } }
+    orderBy: [{ updatedAt: DESC }]
+  ) {
+    id
+    name
+    description
+    filterState
+    toneCurves
+    isPublic
+    updatedAt
+  }
+}
+
+query ListPublicPresets @auth(level: PUBLIC) {
+  presets(
+    where: { isPublic: { eq: true } }
+    orderBy: [{ createdAt: DESC }]
+    limit: 50
+  ) {
+    id
+    name
+    description
+    filterState
+    toneCurves
+    createdAt
+  }
+}
+
+query ListMyLuts @auth(level: USER) {
+  customLuts(
+    where: { ownerUid: { eq_expr: "auth.uid" } }
+    orderBy: [{ createdAt: DESC }]
+  ) {
+    id
+    title
+    lutSize
+    storagePath
+    fileBytes
+    isPublic
+    createdAt
+  }
+}

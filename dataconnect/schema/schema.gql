@@ -1,0 +1,66 @@
+# Firebase Data Connect PostgreSQL Schema for Rust + Wasm Image Studio
+
+type User @table(name: "users") {
+  uid: String! @col(name: "uid") @default(expr: "auth.uid")
+  email: String @col(name: "email")
+  displayName: String @col(name: "display_name")
+  photoUrl: String @col(name: "photo_url")
+  createdAt: Timestamp! @col(name: "created_at") @default(expr: "request.time")
+  updatedAt: Timestamp! @col(name: "updated_at") @default(expr: "request.time")
+}
+
+type CustomLut @table(name: "custom_luts") {
+  id: UUID! @default(expr: "uuidV4()")
+  owner: User! @ref(fields: "ownerUid", references: "uid")
+  ownerUid: String! @col(name: "owner_uid")
+  title: String! @col(name: "title")
+  lutSize: Int! @col(name: "lut_size")
+  storagePath: String! @col(name: "storage_path")
+  fileBytes: Int! @col(name: "file_bytes")
+  isPublic: Boolean! @col(name: "is_public") @default(value: false)
+  createdAt: Timestamp! @col(name: "created_at") @default(expr: "request.time")
+}
+
+type Project @table(name: "projects") {
+  id: UUID! @default(expr: "uuidV4()")
+  owner: User! @ref(fields: "ownerUid", references: "uid")
+  ownerUid: String! @col(name: "owner_uid")
+  name: String! @col(name: "name")
+  width: Int! @col(name: "width")
+  height: Int! @col(name: "height")
+  sourceStoragePath: String! @col(name: "source_storage_path")
+  maskStoragePath: String @col(name: "mask_storage_path")
+  maskEnabled: Boolean! @col(name: "mask_enabled") @default(value: false)
+  activeLut: CustomLut @ref(fields: "activeLutId", references: "id")
+  activeLutId: UUID @col(name: "active_lut_id")
+  filterState: Any! @col(name: "filter_state")
+  toneCurves: Any! @col(name: "tone_curves")
+  isPublic: Boolean! @col(name: "is_public") @default(value: false)
+  createdAt: Timestamp! @col(name: "created_at") @default(expr: "request.time")
+  updatedAt: Timestamp! @col(name: "updated_at") @default(expr: "request.time")
+}
+
+type ProjectSnapshot @table(name: "project_snapshots") {
+  id: UUID! @default(expr: "uuidV4()")
+  project: Project! @ref(fields: "projectId", references: "id")
+  projectId: UUID! @col(name: "project_id")
+  cursorIndex: Int! @col(name: "cursor_index")
+  label: String! @col(name: "label")
+  filterState: Any! @col(name: "filter_state")
+  toneCurves: Any! @col(name: "tone_curves")
+  maskStoragePath: String @col(name: "mask_storage_path")
+  createdAt: Timestamp! @col(name: "created_at") @default(expr: "request.time")
+}
+
+type Preset @table(name: "presets") {
+  id: UUID! @default(expr: "uuidV4()")
+  owner: User! @ref(fields: "ownerUid", references: "uid")
+  ownerUid: String! @col(name: "owner_uid")
+  name: String! @col(name: "name")
+  description: String @col(name: "description")
+  filterState: Any! @col(name: "filter_state")
+  toneCurves: Any! @col(name: "tone_curves")
+  isPublic: Boolean! @col(name: "is_public") @default(value: false)
+  createdAt: Timestamp! @col(name: "created_at") @default(expr: "request.time")
+  updatedAt: Timestamp! @col(name: "updated_at") @default(expr: "request.time")
+}

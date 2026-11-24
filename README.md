@@ -274,5 +274,13 @@ Open your browser at `http://localhost:3000`.
 
 ---
 
+## 🗄️ Optional Cloud Backend (`db` Branch: Firebase + Cloud SQL)
+
+The `db` branch includes a decoupled backend architecture combining **Firebase Authentication**, **Firebase Cloud Storage**, **Cloud SQL (PostgreSQL)** (`db/migrations/001_init.sql`), **Firebase Data Connect** (`dataconnect/`), and a **Cloud Functions Express REST API** (`functions/`), plus an optional frontend client (`www/api/client.js`).
+
+See [docs/database_architecture.md](docs/database_architecture.md) for the full ERD, endpoint reference, and Firebase Emulator setup.
+
+---
+
 ## 📜 License
 MIT License © 2026 Faizan
